@@ -1,0 +1,9 @@
+/target/
+/.sisyphus/
+/.zig-cache/
+/.dvui-cache/
+.DS_Store
+*.db
+*.db-shm
+*.db-wal
+*.log
