@@ -32,6 +32,15 @@
 - Settings are stored in SQLite as JSON strings keyed by constants, including `PREFERENCES_KEY` in `app.rs`.
 - Platform modules should expose `active_app_name`, `platform_note`, and `capabilities` through `platform/mod.rs`.
 
+## 主题与样式
+
+- `src/ui/theme.rs` 定义 `MacosTokens` 结构体，包含 Light/Dark 两套完整调色板常量
+- `MacosTokens::light()` 和 `MacosTokens::dark()` 分别返回对应模式的实例
+- `src/ui/widgets.rs` 提供 `macos_toggle` 和 `macos_range_slider` 自定义控件
+- `src/app.rs` 中的 `resolve_theme()` 函数根据 `color_mode` 设置（`"light"`/`"dark"`/`"system"`）选择主题
+- 系统模式下检测 GTK 主题名称判断暗/亮，回退到 Light
+- 所有设置项使用 `macos_toggle` 控件，保持 macOS 风格一致性
+
 ## ANTI-PATTERNS
 
 - Do not bypass `Storage` from UI code with ad hoc SQL.
