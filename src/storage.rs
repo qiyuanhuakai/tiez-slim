@@ -6,6 +6,9 @@ use sha2::{Digest, Sha256};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+const APP_DATA_DIR: &str = "tiez-slim-linux";
+const LEGACY_DATA_DIR: &str = "myclipboard";
+
 #[derive(Clone)]
 pub struct Storage {
     conn: Arc<Mutex<Connection>>,
@@ -14,15 +17,23 @@ pub struct Storage {
 
 impl Storage {
     pub fn default_path() -> PathBuf {
-        let data_dir = dirs::data_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("myclipboard");
-        data_dir.join("clipboard.db")
+        let base = dirs::data_dir().unwrap_or_else(|| PathBuf::from("."));
+        let path = base.join(APP_DATA_DIR).join("clipboard.db");
+        let legacy_path = base.join(LEGACY_DATA_DIR).join("clipboard.db");
+        if !path.exists() && legacy_path.exists() {
+            legacy_path
+        } else {
+            path
+        }
     }
 
     pub fn path_from_redirect_file() -> Option<PathBuf> {
-        let redirect = dirs::data_dir()?.join("myclipboard").join("datapath.txt");
-        let value = std::fs::read_to_string(redirect).ok()?;
+        let data_dir = dirs::data_dir()?;
+        let redirect = data_dir.join(APP_DATA_DIR).join("datapath.txt");
+        let legacy_redirect = data_dir.join(LEGACY_DATA_DIR).join("datapath.txt");
+        let value = std::fs::read_to_string(&redirect)
+            .or_else(|_| std::fs::read_to_string(legacy_redirect))
+            .ok()?;
         let path = PathBuf::from(value.trim());
         (!path.as_os_str().is_empty()).then_some(path)
     }
@@ -35,7 +46,7 @@ impl Storage {
             .with_context(|| format!("创建数据库目录失败: {}", parent.display()))?;
         let config_dir = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join("myclipboard");
+            .join(APP_DATA_DIR);
         std::fs::create_dir_all(&config_dir)
             .with_context(|| format!("创建配置目录失败: {}", config_dir.display()))?;
         std::fs::write(config_dir.join("datapath.txt"), path.display().to_string())
@@ -357,6 +368,36 @@ impl Storage {
         Ok(())
     }
 
+    pub fn saved_tag_color(&self, name: &str) -> Result<String> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let mut stmt = conn.prepare("SELECT color FROM saved_tags WHERE name = ?1")?;
+        let result = stmt.query_row(params![name], |row| row.get::<_, String>(0));
+        match result {
+            Ok(color) => Ok(color),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok("#4f46e5".to_string()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    pub fn update_saved_tag_color(&self, name: &str, color: &str) -> Result<()> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        conn.execute(
+            "UPDATE saved_tags SET color = ?1 WHERE name = ?2",
+            params![color, name],
+        )?;
+        Ok(())
+    }
+
+    pub fn count_entries_for_tag(&self, tag: &str) -> Result<usize> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let count: usize = conn.query_row(
+            "SELECT COUNT(DISTINCT entry_id) FROM entry_tags WHERE tag = ?1",
+            params![tag],
+            |row| row.get(0),
+        )?;
+        Ok(count)
+    }
+
     pub fn mark_used(&self, id: i64) -> Result<()> {
         let conn = self.conn.lock().expect("storage mutex poisoned");
         conn.execute(
@@ -494,7 +535,7 @@ mod tests {
             .as_nanos();
         let counter = DB_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
-            "myclipboard-test-{}-{nanos}-{counter}.db",
+            "tiez-slim-linux-test-{}-{nanos}-{counter}.db",
             std::process::id()
         ));
         Storage::open(path).expect("open temp db")
@@ -625,13 +666,13 @@ mod tests {
     }
 
     #[test]
-    fn settings_round_trip_supports_tiez_state_keys() {
+    fn settings_round_trip_supports_tiez_slim_linux_state_keys() {
         let storage = temp_storage();
         storage
             .set_setting("app.emoji_favorites", "[\"😀\",\"/tmp/sticker.png\"]")
             .expect("set emoji favorites");
         storage
-            .set_setting("ui.native_tiez", "{\"emoji_panel_enabled\":true}")
+            .set_setting("ui.tiez_slim_linux", "{\"emoji_panel_enabled\":true}")
             .expect("set preferences");
 
         assert_eq!(
@@ -641,7 +682,9 @@ mod tests {
             Some("[\"😀\",\"/tmp/sticker.png\"]".to_string())
         );
         assert_eq!(
-            storage.get_setting("ui.native_tiez").expect("get prefs"),
+            storage
+                .get_setting("ui.tiez_slim_linux")
+                .expect("get prefs"),
             Some("{\"emoji_panel_enabled\":true}".to_string())
         );
     }
@@ -777,7 +820,7 @@ mod tests {
             .expect("clock before epoch")
             .as_nanos();
         let path = std::env::temp_dir().join(format!(
-            "myclipboard-old-schema-{}-{nanos}.db",
+            "tiez-slim-linux-old-schema-{}-{nanos}.db",
             std::process::id()
         ));
         {
