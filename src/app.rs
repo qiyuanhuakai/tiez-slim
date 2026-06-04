@@ -24,7 +24,10 @@ const DEFAULT_WINDOW_SIZE: egui::Vec2 = egui::vec2(380.0, 680.0);
 const MIN_NORMAL_WINDOW_SIZE: egui::Vec2 = egui::vec2(320.0, 400.0);
 const RESIZE_HIT_SIZE: f32 = 8.0;
 const CARD_ACTION_WIDTH: f32 = 92.0;
-const TOOLBAR_BUTTON_SIZE: f32 = 34.0;
+const TOOLBAR_BUTTON_SIZE: f32 = 32.0;
+const TOOLBAR_ICON_SIZE: f32 = 16.0;
+const TOOLBAR_BUTTON_RADIUS: f32 = 9.0;
+const TOOLBAR_ICON_STROKE_WIDTH: f32 = 2.0;
 const CARD_ACTION_BUTTON_SIZE: f32 = 24.0;
 const FULL_ENTRY_CACHE_CAP: usize = 64;
 const EVENT_CHANNEL_CAPACITY: usize = 100;
@@ -1833,7 +1836,7 @@ impl ClipboardApp {
                                 }
                             }
                         }
-                        let pin_label = if self.window_pinned { "⚐" } else { "⚑" };
+                        let pin_label = if self.window_pinned { "📍" } else { "📌" };
                         if toolbar_button(ui, pin_label, "窗口置顶/取消置顶", &self.theme).clicked()
                         {
                             self.window_pinned = !self.window_pinned;
@@ -3950,16 +3953,23 @@ fn vector_toolbar_button(
 ) -> egui::Response {
     let desired_size = egui::vec2(TOOLBAR_BUTTON_SIZE, TOOLBAR_BUTTON_SIZE);
     let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+    let active = matches!(icon, ToolbarIcon::Unpin);
     paint_icon_button(
         ui,
         rect,
         &response,
         icon,
-        theme.fg,
+        if active {
+            egui::Color32::WHITE
+        } else {
+            theme.fg
+        },
+        theme.card,
         theme.card_hover,
+        if active { Some(theme.accent) } else { None },
         egui::Stroke::new(1.0, theme.border),
-        10.0,
-        7.0,
+        TOOLBAR_BUTTON_RADIUS,
+        TOOLBAR_ICON_SIZE,
     );
     response
 }
@@ -3979,10 +3989,12 @@ fn action_bar_button(
         &response,
         icon,
         icon_color,
+        egui::Color32::TRANSPARENT,
         hover_bg,
+        None,
         egui::Stroke::new(1.0, scale_alpha(icon_color, 0.18)),
         7.0,
-        2.0,
+        (rect.width() - 4.0).max(8.0),
     );
     response
 }
@@ -3994,22 +4006,32 @@ fn paint_icon_button(
     response: &egui::Response,
     icon: ToolbarIcon,
     icon_color: egui::Color32,
+    idle_bg: egui::Color32,
     hover_bg: egui::Color32,
+    active_bg: Option<egui::Color32>,
     border: egui::Stroke,
     rounding: f32,
-    padding: f32,
+    icon_size: f32,
 ) {
     if ui.is_rect_visible(rect) {
-        let fill = if response.is_pointer_button_down_on() {
+        let fill = if let Some(active_bg) = active_bg {
+            if response.is_pointer_button_down_on() {
+                scale_alpha(active_bg, 0.86)
+            } else {
+                active_bg
+            }
+        } else if response.is_pointer_button_down_on() {
             scale_alpha(hover_bg, 1.35)
         } else if response.hovered() {
             hover_bg
         } else {
-            egui::Color32::TRANSPARENT
+            idle_bg
         };
         ui.painter()
             .rect(rect, egui::Rounding::same(rounding), fill, border);
-        paint_toolbar_icon(ui.painter(), rect.shrink(padding), icon, icon_color);
+        let icon_rect =
+            egui::Rect::from_center_size(rect.center(), egui::vec2(icon_size, icon_size));
+        paint_toolbar_icon(ui.painter(), icon_rect, icon, icon_color);
     }
 }
 
@@ -4019,141 +4041,99 @@ fn paint_toolbar_icon(
     icon: ToolbarIcon,
     color: egui::Color32,
 ) {
-    let stroke = egui::Stroke::new(2.2, color);
-    let c = rect.center();
-    let l = rect.left();
-    let r = rect.right();
-    let t = rect.top();
-    let b = rect.bottom();
+    let stroke = egui::Stroke::new(TOOLBAR_ICON_STROKE_WIDTH, color);
+    let p = |x: f32, y: f32| {
+        egui::pos2(
+            rect.left() + rect.width() * x / 24.0,
+            rect.top() + rect.height() * y / 24.0,
+        )
+    };
+    let circle = |x: f32, y: f32, radius: f32| {
+        let scale = rect.width().min(rect.height()) / 24.0;
+        (p(x, y), radius * scale)
+    };
     match icon {
         ToolbarIcon::Back => {
-            painter.line_segment(
-                [egui::pos2(r - 2.0, t + 1.5), egui::pos2(l + 4.0, c.y)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(l + 4.0, c.y), egui::pos2(r - 2.0, b - 1.5)],
-                stroke,
-            );
+            painter.line_segment([p(15.0, 18.0), p(9.0, 12.0)], stroke);
+            painter.line_segment([p(9.0, 12.0), p(15.0, 6.0)], stroke);
         }
         ToolbarIcon::Close => {
-            painter.line_segment(
-                [egui::pos2(l + 3.0, t + 3.0), egui::pos2(r - 3.0, b - 3.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(r - 3.0, t + 3.0), egui::pos2(l + 3.0, b - 3.0)],
-                stroke,
-            );
+            painter.line_segment([p(18.0, 6.0), p(6.0, 18.0)], stroke);
+            painter.line_segment([p(6.0, 6.0), p(18.0, 18.0)], stroke);
         }
         ToolbarIcon::Settings => {
-            painter.circle_stroke(c, 5.0, stroke);
-            for i in 0..8 {
-                let a = i as f32 * std::f32::consts::TAU / 8.0;
-                let inner = c + egui::vec2(a.cos() * 8.0, a.sin() * 8.0);
-                let outer = c + egui::vec2(a.cos() * 10.5, a.sin() * 10.5);
-                painter.line_segment([inner, outer], stroke);
+            let (center, inner_radius) = circle(12.0, 12.0, 3.0);
+            let mut gear = Vec::with_capacity(17);
+            for i in 0..16 {
+                let angle = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::TAU / 16.0;
+                let radius = if i % 2 == 0 { 9.5 } else { 7.2 };
+                gear.push(p(12.0 + angle.cos() * radius, 12.0 + angle.sin() * radius));
             }
+            gear.push(gear[0]);
+            painter.add(egui::Shape::line(gear, stroke));
+            painter.circle_stroke(center, inner_radius, stroke);
         }
         ToolbarIcon::Emoji => {
-            painter.circle_stroke(c, 10.0, stroke);
-            painter.circle_filled(egui::pos2(c.x - 4.0, c.y - 3.0), 1.6, color);
-            painter.circle_filled(egui::pos2(c.x + 4.0, c.y - 3.0), 1.6, color);
-            painter.line_segment(
-                [
-                    egui::pos2(c.x - 4.0, c.y + 4.0),
-                    egui::pos2(c.x + 4.0, c.y + 4.0),
-                ],
-                stroke,
-            );
+            let (center, radius) = circle(12.0, 12.0, 10.0);
+            painter.circle_stroke(center, radius, stroke);
+            painter.circle_filled(circle(9.0, 10.0, 1.0).0, circle(9.0, 10.0, 1.0).1, color);
+            painter.circle_filled(circle(15.0, 10.0, 1.0).0, circle(15.0, 10.0, 1.0).1, color);
+            let smile = [
+                p(8.0, 15.0),
+                p(10.0, 17.0),
+                p(12.0, 17.5),
+                p(14.0, 17.0),
+                p(16.0, 15.0),
+            ];
+            painter.add(egui::Shape::line(smile.to_vec(), stroke));
         }
         ToolbarIcon::Clear => {
-            painter.line_segment(
-                [egui::pos2(l + 4.0, t + 6.0), egui::pos2(r - 4.0, t + 6.0)],
-                stroke,
-            );
-            painter.rect_stroke(
-                egui::Rect::from_min_max(
-                    egui::pos2(l + 6.0, t + 8.0),
-                    egui::pos2(r - 6.0, b - 3.0),
-                ),
-                egui::Rounding::same(2.0),
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(c.x - 3.0, t + 3.0),
-                    egui::pos2(c.x + 3.0, t + 3.0),
-                ],
-                stroke,
-            );
+            painter.line_segment([p(3.0, 6.0), p(21.0, 6.0)], stroke);
+            painter.line_segment([p(6.0, 6.0), p(7.2, 20.0)], stroke);
+            painter.line_segment([p(18.0, 6.0), p(16.8, 20.0)], stroke);
+            painter.line_segment([p(10.0, 11.0), p(10.0, 17.0)], stroke);
+            painter.line_segment([p(14.0, 11.0), p(14.0, 17.0)], stroke);
+            painter.line_segment([p(7.2, 20.0), p(16.8, 20.0)], stroke);
+            painter.line_segment([p(10.0, 3.0), p(14.0, 3.0)], stroke);
+            painter.line_segment([p(10.0, 3.0), p(9.0, 6.0)], stroke);
+            painter.line_segment([p(14.0, 3.0), p(15.0, 6.0)], stroke);
         }
         ToolbarIcon::Pin | ToolbarIcon::Unpin => {
-            painter.line_segment([egui::pos2(c.x, t + 3.0), egui::pos2(c.x, b - 4.0)], stroke);
-            painter.line_segment(
-                [
-                    egui::pos2(l + 5.0, c.y - 3.0),
-                    egui::pos2(r - 5.0, c.y - 3.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(l + 8.0, t + 4.0), egui::pos2(r - 8.0, t + 4.0)],
-                stroke,
-            );
+            let pin_body = [
+                p(8.0, 3.0),
+                p(16.0, 3.0),
+                p(16.0, 7.0),
+                p(15.0, 7.0),
+                p(15.0, 12.0),
+                p(18.0, 16.0),
+                p(6.0, 16.0),
+                p(9.0, 12.0),
+                p(9.0, 7.0),
+                p(8.0, 7.0),
+                p(8.0, 3.0),
+            ];
+            painter.add(egui::Shape::line(pin_body.to_vec(), stroke));
+            painter.line_segment([p(12.0, 17.0), p(12.0, 22.0)], stroke);
             if matches!(icon, ToolbarIcon::Unpin) {
-                painter.line_segment(
-                    [egui::pos2(l + 3.0, b - 3.0), egui::pos2(r - 3.0, t + 3.0)],
-                    stroke,
-                );
+                painter.line_segment([p(4.0, 20.0), p(20.0, 4.0)], stroke);
             }
         }
         ToolbarIcon::Open => {
             painter.rect_stroke(
-                egui::Rect::from_min_max(
-                    egui::pos2(l + 3.0, t + 7.0),
-                    egui::pos2(r - 7.0, b - 3.0),
-                ),
+                egui::Rect::from_min_max(p(5.0, 8.0), p(16.0, 19.0)),
                 egui::Rounding::same(2.0),
                 stroke,
             );
-            painter.line_segment(
-                [egui::pos2(l + 8.0, t + 5.0), egui::pos2(r - 3.0, t + 5.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(r - 3.0, t + 5.0), egui::pos2(r - 3.0, b - 8.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(r - 4.0, t + 6.0), egui::pos2(l + 8.0, b - 6.0)],
-                stroke,
-            );
+            painter.line_segment([p(10.0, 5.0), p(19.0, 5.0)], stroke);
+            painter.line_segment([p(19.0, 5.0), p(19.0, 14.0)], stroke);
+            painter.line_segment([p(18.0, 6.0), p(10.0, 14.0)], stroke);
         }
         ToolbarIcon::Dev => {
-            painter.line_segment(
-                [egui::pos2(l + 4.0, c.y), egui::pos2(l + 9.0, t + 5.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(l + 4.0, c.y), egui::pos2(l + 9.0, b - 5.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(r - 4.0, c.y), egui::pos2(r - 9.0, t + 5.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(r - 4.0, c.y), egui::pos2(r - 9.0, b - 5.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(c.x + 2.0, t + 3.0),
-                    egui::pos2(c.x - 2.0, b - 3.0),
-                ],
-                stroke,
-            );
+            painter.line_segment([p(8.0, 8.0), p(4.0, 12.0)], stroke);
+            painter.line_segment([p(4.0, 12.0), p(8.0, 16.0)], stroke);
+            painter.line_segment([p(16.0, 8.0), p(20.0, 12.0)], stroke);
+            painter.line_segment([p(20.0, 12.0), p(16.0, 16.0)], stroke);
+            painter.line_segment([p(14.0, 4.0), p(10.0, 20.0)], stroke);
         }
     }
 }
