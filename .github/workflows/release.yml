@@ -10,6 +10,7 @@ permissions:
 
 env:
   APP_NAME: tiez-slim-linux
+  DISPLAY_NAME: tiez-slim
   CARGO_INCREMENTAL: 0
   CARGO_TERM_COLOR: always
 
@@ -32,7 +33,12 @@ jobs:
             libxkbcommon-dev \
             libxkbcommon-x11-dev \
             libwayland-dev \
-            libgl1-mesa-dev
+            libgl1-mesa-dev \
+            file \
+            rpm \
+            ruby \
+            ruby-dev \
+            wget
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -46,13 +52,82 @@ jobs:
       - name: Build release binary
         run: cargo build --release --locked
 
-      - name: Package release binary
+      - name: Install packaging tools
         run: |
-          mkdir -p dist
-          cp "target/release/${APP_NAME}" "dist/${APP_NAME}"
-          archive="${APP_NAME}-${GITHUB_REF_NAME}-x86_64-unknown-linux-gnu.tar.gz"
-          tar -C dist -czf "dist/${archive}" "${APP_NAME}"
-          (cd dist && sha256sum "${archive}" > "${archive}.sha256")
+          sudo gem install --no-document fpm
+          wget -qO linuxdeploy \
+            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+
+      - name: Prepare Linux package metadata
+        run: |
+          mkdir -p packaging dist
+          cat > "packaging/${APP_NAME}.desktop" <<EOF
+          [Desktop Entry]
+          Type=Application
+          Name=${DISPLAY_NAME}
+          Comment=Lightweight native TieZ clipboard manager
+          Exec=${APP_NAME}
+          Icon=${APP_NAME}
+          Terminal=false
+          Categories=Utility;
+          EOF
+          install -Dm755 "target/release/${APP_NAME}" "packaging/root/usr/bin/${APP_NAME}"
+          install -Dm644 "packaging/${APP_NAME}.desktop" "packaging/root/usr/share/applications/${APP_NAME}.desktop"
+          install -Dm644 "assets/icons/${APP_NAME}.png" "packaging/root/usr/share/icons/hicolor/256x256/apps/${APP_NAME}.png"
+
+      - name: Build deb and rpm packages
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          fpm -s dir -t deb \
+            -n "${APP_NAME}" \
+            -v "${version}" \
+            --architecture amd64 \
+            --license GPL-3.0 \
+            --description "Lightweight native TieZ clipboard manager" \
+            --depends xdotool \
+            --maintainer "qiyuanhuakai" \
+            --url "https://github.com/qiyuanhuakai/tiez-slim-linux" \
+            -C packaging/root \
+            -p "dist/${APP_NAME}_${version}_amd64.deb" \
+            usr
+          fpm -s dir -t rpm \
+            -n "${APP_NAME}" \
+            -v "${version}" \
+            --architecture x86_64 \
+            --license GPL-3.0 \
+            --description "Lightweight native TieZ clipboard manager" \
+            --depends xdotool \
+            --maintainer "qiyuanhuakai" \
+            --url "https://github.com/qiyuanhuakai/tiez-slim-linux" \
+            -C packaging/root \
+            -p "dist/${APP_NAME}-${version}-1.x86_64.rpm" \
+            usr
+
+      - name: Build AppImage package
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+          ARCH: x86_64
+          NO_STRIP: 1
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p AppDir/usr/bin AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
+          cp "target/release/${APP_NAME}" "AppDir/usr/bin/${APP_NAME}"
+          cp "packaging/${APP_NAME}.desktop" "AppDir/usr/share/applications/${APP_NAME}.desktop"
+          cp "assets/icons/${APP_NAME}.png" "AppDir/usr/share/icons/hicolor/256x256/apps/${APP_NAME}.png"
+          ./linuxdeploy \
+            --appdir AppDir \
+            --desktop-file "AppDir/usr/share/applications/${APP_NAME}.desktop" \
+            --icon-file "AppDir/usr/share/icons/hicolor/256x256/apps/${APP_NAME}.png" \
+            --output appimage
+          appimage_path="$(find . -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
+          test -n "${appimage_path}"
+          mv "${appimage_path}" "dist/${APP_NAME}-${version}-x86_64.AppImage"
+
+      - name: Generate package checksums
+        run: |
+          cd dist
+          sha256sum ./*.deb ./*.rpm ./*.AppImage > "${APP_NAME}-${GITHUB_REF_NAME}-checksums.sha256"
 
       - name: Create draft release
         uses: softprops/action-gh-release@v2
@@ -60,5 +135,7 @@ jobs:
           draft: true
           generate_release_notes: true
           files: |
-            dist/${{ env.APP_NAME }}-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz
-            dist/${{ env.APP_NAME }}-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz.sha256
+            dist/*.deb
+            dist/*.rpm
+            dist/*.AppImage
+            dist/${{ env.APP_NAME }}-${{ github.ref_name }}-checksums.sha256
