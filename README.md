@@ -1,11 +1,11 @@
 # tiez-slim-linux
 
-Rust 原生轻量版 TieZ 剪贴板管理器。原始上游来自 [`jimuzhe/tiez-clipboard`](https://github.com/jimuzhe/tiez-clipboard)，本项目基于本地 `../tiez-clipboard` 中的大量修改分支（[`qiyuanhuakai/tiez-clipboard`](https://github.com/qiyuanhuakai/tiez-clipboard)）迁移核心能力，目标是在 Linux 上去掉 React/Tauri/WebView 开销，并保留 TieZ 的紧凑视觉与高频剪贴板工作流。
+Rust 原生轻量版 TieZ 剪贴板管理器。原始上游来自 [`jimuzhe/tiez-clipboard`](https://github.com/jimuzhe/tiez-clipboard)，本项目基于我的大量修改分支（[`qiyuanhuakai/tiez-clipboard`](https://github.com/qiyuanhuakai/tiez-clipboard)）迁移核心能力，目标是在 Linux 上去掉 React/Tauri/WebView 开销，并保留 TieZ 的紧凑视觉，我喜爱的macos风格与高频剪贴板工作流。
 
 ## 当前实现
 
 - 原生自绘 UI：`eframe/egui`，无系统标题栏，自绘 `tiez-slim` 顶栏可拖拽，支持圆角窗口、可切换应用边框和统一尺寸的 egui 手绘矢量工具图标。
-- 字体优先使用系统 `Maple Mono NF CN`，并回退到 Noto/思源/WenQuanYi 等 CJK 字体。
+- 字体优先使用个人喜好的 `Maple Mono NF CN`，并回退到 Noto/思源/WenQuanYi 等 CJK 字体。
 - Linux 剪贴板：`arboard` 轮询监听文本、富文本 HTML、图片和文件列表；文本自动识别 URL、代码、文件路径、图片/视频 data URL 等类型。
 - 持久化：`rusqlite` + bundled SQLite；默认数据目录为 XDG 数据目录下的 `tiez-slim-linux`，并兼容读取旧 `myclipboard` 数据位置。
 - 历史能力：搜索、类型过滤、标签过滤、置顶、删除、清空、标签编辑、左键/右键/Enter 按 TieZ 语义复制并粘贴。
@@ -51,4 +51,4 @@ https://github.com/qiyuanhuakai/tiez-slim-linux
 
 ## 与旧版差异
 
-原始 `tiez-clipboard` 使用 React + Tauri 2 + WebView。`tiez-slim-linux` 对齐你在 `qiyuanhuakai/tiez-clipboard` 分支中的主界面视觉和核心数据模型，并用 Rust 原生能力补齐文本/富文本/图片/文件剪贴板、X11 全局呼出、鼠标中键、点击/键盘粘贴流程、系统托盘、边缘停靠、默认打开应用设置和可配置数据位置。
+原始 `tiez-clipboard` 使用 React + Tauri 2 + WebView。`tiez-slim-linux` 对齐个人 `qiyuanhuakai/tiez-clipboard` 分支中的主界面视觉和核心数据模型，并用 Rust 原生能力补齐文本/富文本/图片/文件剪贴板、X11 全局呼出、鼠标中键、点击/键盘粘贴流程、系统托盘、边缘停靠、默认打开应用设置和可配置数据位置。
