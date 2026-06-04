@@ -1,8 +1,11 @@
-use crate::model::{ClipboardEntry, ClipboardKind, MAX_ENTRIES, RETENTION_DAYS};
+use crate::model::{
+    ClipboardEntry, ClipboardEntrySummary, ClipboardKind, MAX_ENTRIES, RETENTION_DAYS,
+};
 use anyhow::{Context, Result};
 use chrono::{Duration, Local};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -93,7 +96,8 @@ impl Storage {
                 use_count INTEGER NOT NULL DEFAULT 0,
                 is_external INTEGER NOT NULL DEFAULT 0,
                 pinned_order INTEGER NOT NULL DEFAULT 0,
-                content_hash TEXT NOT NULL UNIQUE
+                content_hash TEXT NOT NULL UNIQUE,
+                sensitive INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -114,6 +118,8 @@ impl Storage {
                 ON clipboard_history(is_pinned, timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_clipboard_preview
                 ON clipboard_history(preview);
+            CREATE INDEX IF NOT EXISTS idx_clipboard_timestamp
+                ON clipboard_history(timestamp);
             CREATE INDEX IF NOT EXISTS idx_entry_tags_tag
                 ON entry_tags(tag);",
         )?;
@@ -132,6 +138,44 @@ impl Storage {
             "pinned_order",
             "INTEGER NOT NULL DEFAULT 0",
         )?;
+        ensure_column(
+            &conn,
+            "clipboard_history",
+            "sensitive",
+            "INTEGER NOT NULL DEFAULT 0",
+        )?;
+        let backfill_done: bool = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'migration.sensitive_backfill_v1'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?
+            .map(|v| v == "1")
+            .unwrap_or(false);
+        if !backfill_done {
+            conn.execute(
+                "UPDATE clipboard_history
+                 SET sensitive = 1
+                 WHERE sensitive = 0
+                   AND content_type IN ('text', 'url', 'code', 'rich_text')
+                   AND (
+                     content LIKE '%@%'
+                     OR lower(content) LIKE '%password%'
+                     OR lower(content) LIKE '%secret%'
+                     OR lower(content) LIKE '%token%'
+                   )",
+                [],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?1, ?2, ?3)",
+                params![
+                    "migration.sensitive_backfill_v1",
+                    "1",
+                    Local::now().timestamp_millis()
+                ],
+            )?;
+        }
         conn.execute(
             "INSERT OR IGNORE INTO saved_tags (name, color) VALUES (?1, ?2), (?3, ?4)",
             params!["sensitive", "#4f46e5", "密码", "#dc2626"],
@@ -155,6 +199,7 @@ impl Storage {
             )
         };
         let hash = content_hash(entry.kind.as_str(), &hash_input);
+        let sensitive = entry.is_sensitive() as i64;
         let mut conn = self.conn.lock().expect("storage mutex poisoned");
         let tx = conn.transaction()?;
 
@@ -173,8 +218,8 @@ impl Storage {
             tx.execute(
                 "UPDATE clipboard_history
                  SET timestamp = ?1, source_app = ?2, preview = ?3, content_type = ?4,
-                     html_content = ?5, source_app_path = ?6, is_external = ?7
-                 WHERE id = ?8",
+                     html_content = ?5, source_app_path = ?6, is_external = ?7, sensitive = ?8
+                 WHERE id = ?9",
                 params![
                     entry.timestamp,
                     entry.source_app,
@@ -183,6 +228,7 @@ impl Storage {
                     entry.html_content,
                     entry.source_app_path,
                     entry.is_external as i64,
+                    sensitive,
                     id
                 ],
             )?;
@@ -191,8 +237,8 @@ impl Storage {
             tx.execute(
                 "INSERT INTO clipboard_history
                  (content_type, content, html_content, source_app, source_app_path, timestamp,
-                  preview, is_external, pinned_order, content_hash)
-                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                  preview, is_external, pinned_order, content_hash, sensitive)
+                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     entry.kind.as_str(),
                     entry.content,
@@ -203,7 +249,8 @@ impl Storage {
                     entry.preview,
                     entry.is_external as i64,
                     entry.pinned_order,
-                    hash
+                    hash,
+                    sensitive
                 ],
             )?;
             tx.last_insert_rowid()
@@ -215,10 +262,12 @@ impl Storage {
         Ok(id)
     }
 
+    #[allow(dead_code)]
     pub fn list(&self, query: &str) -> Result<Vec<ClipboardEntry>> {
         self.list_filtered(query, None, None)
     }
 
+    #[allow(dead_code)]
     pub fn list_filtered(
         &self,
         query: &str,
@@ -226,67 +275,87 @@ impl Storage {
         tag: Option<&str>,
     ) -> Result<Vec<ClipboardEntry>> {
         let conn = self.conn.lock().expect("storage mutex poisoned");
-        let mut sql =
-            "SELECT DISTINCT h.id, h.content_type, h.content, h.html_content, h.source_app,
+        let (where_sql, values) = build_where_clause(query, kind, tag);
+        let sql = format!(
+            "SELECT h.id, h.content_type, h.content, h.html_content, h.source_app,
                 h.source_app_path, h.timestamp, h.preview, h.is_pinned, h.use_count,
                 h.is_external, h.pinned_order
              FROM clipboard_history h
-             LEFT JOIN entry_tags t ON t.entry_id = h.id
-             WHERE 1 = 1"
-                .to_string();
-        let mut values = Vec::new();
-
-        let trimmed_query = query.trim();
-        if !trimmed_query.is_empty() {
-            sql.push_str(
-                " AND (h.content LIKE ? OR h.preview LIKE ? OR h.source_app LIKE ? OR t.tag LIKE ?)",
-            );
-            let like = format!("%{trimmed_query}%");
-            values.extend([like.clone(), like.clone(), like.clone(), like]);
-        }
-        if let Some(kind) = kind {
-            sql.push_str(" AND h.content_type = ?");
-            values.push(kind.as_str().to_string());
-        }
-        if let Some(tag) = tag {
-            sql.push_str(
-                " AND EXISTS (
-                    SELECT 1 FROM entry_tags filter_tags
-                    WHERE filter_tags.entry_id = h.id AND filter_tags.tag = ?
-                )",
-            );
-            values.push(tag.to_string());
-        }
-        sql.push_str(" ORDER BY h.is_pinned DESC, h.pinned_order ASC, h.timestamp DESC LIMIT 300");
-
+             WHERE {where_sql}
+             ORDER BY h.is_pinned DESC, h.pinned_order ASC, h.timestamp DESC LIMIT 300"
+        );
         let mut stmt = conn.prepare(&sql)?;
-        let rows = stmt
+        let mut entries = stmt
             .query_map(params_from_iter(values.iter()), row_to_entry)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        rows.into_iter()
-            .map(|mut entry| {
-                entry.tags = self.tags_for_entry_locked(&conn, entry.id)?;
-                Ok(entry)
-            })
-            .collect()
+        let ids: Vec<i64> = entries.iter().map(|e| e.id).collect();
+        let tags_by_id = fetch_tags_batch(&conn, &ids)?;
+        for entry in &mut entries {
+            if let Some(tags) = tags_by_id.get(&entry.id) {
+                entry.tags = tags.clone();
+            }
+        }
+        Ok(entries)
+    }
+
+    pub fn list_summaries_filtered(
+        &self,
+        query: &str,
+        kind: Option<&ClipboardKind>,
+        tag: Option<&str>,
+    ) -> Result<Vec<ClipboardEntrySummary>> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let (where_sql, values) = build_where_clause(query, kind, tag);
+        let sql = format!(
+            "SELECT h.id, h.content_type, h.source_app, h.source_app_path, h.timestamp,
+                h.preview, h.is_pinned, h.use_count, h.is_external, h.pinned_order,
+                h.sensitive
+             FROM clipboard_history h
+             WHERE {where_sql}
+             ORDER BY h.is_pinned DESC, h.pinned_order ASC, h.timestamp DESC LIMIT 300"
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let mut summaries = stmt
+            .query_map(params_from_iter(values.iter()), row_to_summary)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        let ids: Vec<i64> = summaries.iter().map(|s| s.id).collect();
+        let tags_by_id = fetch_tags_batch(&conn, &ids)?;
+        for summary in &mut summaries {
+            if let Some(tags) = tags_by_id.get(&summary.id) {
+                summary.tags = tags.clone();
+            }
+        }
+        Ok(summaries)
+    }
+
+    pub fn get_entry(&self, id: i64) -> Result<Option<ClipboardEntry>> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, content_type, content, html_content, source_app, source_app_path,
+                timestamp, preview, is_pinned, use_count, is_external, pinned_order
+             FROM clipboard_history WHERE id = ?1",
+        )?;
+        let mut entry = match stmt.query_row(params![id], row_to_entry).optional()? {
+            Some(entry) => entry,
+            None => return Ok(None),
+        };
+        let tags_by_id = fetch_tags_batch(&conn, &[entry.id])?;
+        if let Some(tags) = tags_by_id.get(&entry.id) {
+            entry.tags = tags.clone();
+        }
+        Ok(Some(entry))
     }
 
     pub fn delete(&self, id: i64) -> Result<()> {
         let conn = self.conn.lock().expect("storage mutex poisoned");
-        conn.execute("DELETE FROM entry_tags WHERE entry_id = ?1", params![id])?;
         conn.execute("DELETE FROM clipboard_history WHERE id = ?1", params![id])?;
         Ok(())
     }
 
     pub fn clear_unpinned(&self) -> Result<()> {
         let conn = self.conn.lock().expect("storage mutex poisoned");
-        conn.execute(
-            "DELETE FROM entry_tags WHERE entry_id IN (
-                SELECT id FROM clipboard_history WHERE is_pinned = 0
-            )",
-            [],
-        )?;
         conn.execute("DELETE FROM clipboard_history WHERE is_pinned = 0", [])?;
         Ok(())
     }
@@ -337,6 +406,32 @@ impl Storage {
                 params![tag, "#4f46e5"],
             )?;
         }
+        // Recompute cached sensitive so UI masking tracks the tag set.
+        let (content, content_type): (String, String) = tx
+            .query_row(
+                "SELECT content, content_type FROM clipboard_history WHERE id = ?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .unwrap_or_default();
+        let kind = ClipboardKind::from(content_type.as_str());
+        let tagged_sensitive = tags.iter().any(|tag| {
+            let tag = tag.to_ascii_lowercase();
+            tag == "sensitive" || tag == "密码" || tag == "password" || tag == "secret"
+        });
+        let content_sensitive = matches!(
+            kind,
+            ClipboardKind::Text
+                | ClipboardKind::Url
+                | ClipboardKind::Code
+                | ClipboardKind::RichText
+        ) && crate::model::looks_sensitive(&content);
+        let is_sensitive = (tagged_sensitive || content_sensitive) as i64;
+        tx.execute(
+            "UPDATE clipboard_history SET sensitive = ?1 WHERE id = ?2",
+            params![is_sensitive, id],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -422,12 +517,6 @@ impl Storage {
         let cutoff = (Local::now() - Duration::days(RETENTION_DAYS)).timestamp_millis();
         let conn = self.conn.lock().expect("storage mutex poisoned");
         conn.execute(
-            "DELETE FROM entry_tags WHERE entry_id IN (
-                SELECT id FROM clipboard_history WHERE is_pinned = 0 AND timestamp < ?1
-            )",
-            params![cutoff],
-        )?;
-        conn.execute(
             "DELETE FROM clipboard_history WHERE is_pinned = 0 AND timestamp < ?1",
             params![cutoff],
         )?;
@@ -436,16 +525,14 @@ impl Storage {
 
     fn enforce_limit(&self) -> Result<()> {
         let conn = self.conn.lock().expect("storage mutex poisoned");
-        conn.execute(
-            "DELETE FROM entry_tags
-             WHERE entry_id IN (
-                SELECT id FROM clipboard_history
-                WHERE is_pinned = 0
-                ORDER BY timestamp DESC
-                LIMIT -1 OFFSET ?1
-             )",
-            params![MAX_ENTRIES as i64],
+        let unpinned_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM clipboard_history WHERE is_pinned = 0",
+            [],
+            |row| row.get(0),
         )?;
+        if unpinned_count <= MAX_ENTRIES as i64 {
+            return Ok(());
+        }
         conn.execute(
             "DELETE FROM clipboard_history
              WHERE id IN (
@@ -459,6 +546,7 @@ impl Storage {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn tags_for_entry_locked(&self, conn: &Connection, id: i64) -> Result<Vec<String>> {
         let mut stmt =
             conn.prepare("SELECT tag FROM entry_tags WHERE entry_id = ?1 ORDER BY tag")?;
@@ -466,6 +554,58 @@ impl Storage {
             .query_map(params![id], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?)
     }
+}
+
+fn build_where_clause(
+    query: &str,
+    kind: Option<&ClipboardKind>,
+    tag: Option<&str>,
+) -> (String, Vec<String>) {
+    let mut sql = String::from("1 = 1");
+    let mut values = Vec::new();
+
+    let trimmed_query = query.trim();
+    if !trimmed_query.is_empty() {
+        sql.push_str(
+            " AND (h.content LIKE ? OR h.preview LIKE ? OR h.source_app LIKE ? OR EXISTS (\
+             SELECT 1 FROM entry_tags qt WHERE qt.entry_id = h.id AND qt.tag LIKE ?))",
+        );
+        let like = format!("%{trimmed_query}%");
+        values.extend([like.clone(), like.clone(), like.clone(), like]);
+    }
+    if let Some(kind) = kind {
+        sql.push_str(" AND h.content_type = ?");
+        values.push(kind.as_str().to_string());
+    }
+    if let Some(tag) = tag {
+        sql.push_str(
+            " AND EXISTS (SELECT 1 FROM entry_tags ft WHERE ft.entry_id = h.id AND ft.tag = ?)",
+        );
+        values.push(tag.to_string());
+    }
+    (sql, values)
+}
+
+fn fetch_tags_batch(conn: &Connection, ids: &[i64]) -> Result<HashMap<i64, Vec<String>>> {
+    let mut tags_by_id: HashMap<i64, Vec<String>> = HashMap::new();
+    if ids.is_empty() {
+        return Ok(tags_by_id);
+    }
+    let placeholders = std::iter::repeat_n("?", ids.len())
+        .collect::<Vec<_>>()
+        .join(",");
+    let sql = format!(
+        "SELECT entry_id, tag FROM entry_tags WHERE entry_id IN ({placeholders}) ORDER BY tag"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(ids.iter()), |row| {
+        Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (entry_id, tag) = row?;
+        tags_by_id.entry(entry_id).or_default().push(tag);
+    }
+    Ok(tags_by_id)
 }
 
 fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClipboardEntry> {
@@ -483,6 +623,23 @@ fn row_to_entry(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClipboardEntry> {
         use_count: row.get(9)?,
         is_external: row.get::<_, i64>(10)? != 0,
         pinned_order: row.get(11)?,
+    })
+}
+
+fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<ClipboardEntrySummary> {
+    Ok(ClipboardEntrySummary {
+        id: row.get(0)?,
+        kind: ClipboardKind::from(row.get::<_, String>(1)?.as_str()),
+        source_app: row.get(2)?,
+        source_app_path: row.get(3)?,
+        timestamp: row.get(4)?,
+        preview: row.get(5)?,
+        is_pinned: row.get::<_, i64>(6)? != 0,
+        tags: Vec::new(),
+        use_count: row.get(7)?,
+        is_external: row.get::<_, i64>(8)? != 0,
+        pinned_order: row.get(9)?,
+        sensitive: row.get::<_, i64>(10)? != 0,
     })
 }
 
@@ -849,5 +1006,63 @@ mod tests {
         let entries = storage.list("example").expect("list after migrate");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].kind, ClipboardKind::Url);
+    }
+
+    #[test]
+    fn list_summaries_filtered_returns_summaries_without_content() {
+        let storage = temp_storage();
+        let entry = ClipboardEntry::captured_text("hello world".to_string(), "test".to_string())
+            .expect("valid entry");
+        let id = storage.save_entry(&entry).expect("save");
+
+        let summaries = storage
+            .list_summaries_filtered("", Some(&ClipboardKind::Text), None)
+            .expect("list summaries");
+        assert_eq!(summaries.len(), 1);
+        assert_eq!(summaries[0].id, id);
+        assert_eq!(summaries[0].kind, ClipboardKind::Text);
+        assert_eq!(summaries[0].preview, "hello world");
+        assert!(!summaries[0].is_sensitive());
+    }
+
+    #[test]
+    fn list_summaries_filtered_persists_sensitive_flag() {
+        let storage = temp_storage();
+        let entry = ClipboardEntry::captured_text("13812345678".to_string(), "test".to_string())
+            .expect("valid entry");
+        storage.save_entry(&entry).expect("save");
+
+        let summaries = storage
+            .list_summaries_filtered("", None, None)
+            .expect("list summaries");
+        assert_eq!(summaries.len(), 1);
+        assert!(
+            summaries[0].is_sensitive(),
+            "phone-number content should be marked sensitive on save"
+        );
+    }
+
+    #[test]
+    fn get_entry_returns_full_entry_with_content_and_tags() {
+        let storage = temp_storage();
+        let entry =
+            ClipboardEntry::captured_text("lazy loaded text".to_string(), "test".to_string())
+                .expect("valid entry");
+        let id = storage.save_entry(&entry).expect("save");
+        storage
+            .set_tags(id, &["work".to_string()])
+            .expect("set tag");
+
+        let loaded = storage
+            .get_entry(id)
+            .expect("get entry")
+            .expect("entry exists");
+        assert_eq!(loaded.id, id);
+        assert_eq!(loaded.content, "lazy loaded text");
+        assert_eq!(loaded.tags, vec!["work".to_string()]);
+        assert_eq!(loaded.kind, ClipboardKind::Text);
+
+        let missing = storage.get_entry(9_999_999).expect("get missing");
+        assert!(missing.is_none());
     }
 }

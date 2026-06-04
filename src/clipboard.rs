@@ -6,7 +6,7 @@ use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::io::Cursor;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -64,78 +64,102 @@ fn watch_loop(sender: Sender<ClipboardEvent>) {
     let mut last_image_fingerprint = String::new();
     let mut last_html_fingerprint = String::new();
     let mut last_file_fingerprint = String::new();
+    // Keep a single arboard::Clipboard instance across iterations; constructing
+    // one is expensive (X11/GTK init). Recreate only when every probe fails,
+    // which signals the underlying connection is broken.
+    let mut clipboard: Option<Clipboard> = None;
     loop {
-        match Clipboard::new() {
-            Ok(mut clipboard) => {
-                if let Ok(paths) = clipboard.get().file_list() {
-                    let paths = paths
-                        .into_iter()
-                        .map(|path| path.to_string_lossy().to_string())
-                        .collect::<Vec<_>>();
-                    let fingerprint = string_fingerprint(&paths.join("\n"));
-                    if !paths.is_empty() && fingerprint != last_file_fingerprint {
+        if clipboard.is_none() {
+            match Clipboard::new() {
+                Ok(c) => clipboard = Some(c),
+                Err(err) => {
+                    let _ = sender.try_send(ClipboardEvent::Error(err.to_string()));
+                    thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+            }
+        }
+        let mut handled = false;
+        if let Some(clipboard) = clipboard.as_mut() {
+            if let Ok(paths) = clipboard.get().file_list() {
+                handled = true;
+                let paths = paths
+                    .into_iter()
+                    .map(|path| path.to_string_lossy().to_string())
+                    .collect::<Vec<_>>();
+                let fingerprint = string_fingerprint(&paths.join("\n"));
+                if !paths.is_empty() && fingerprint != last_file_fingerprint {
+                    let entry = ClipboardEntry::captured_files(paths, platform::active_app_name());
+                    let sent_or_skipped = match entry {
+                        Some(e) => sender.try_send(ClipboardEvent::Captured(e)).is_ok(),
+                        None => true,
+                    };
+                    if sent_or_skipped {
                         last_file_fingerprint = fingerprint;
                         last_seen.clear();
                         last_image_fingerprint.clear();
                         last_html_fingerprint.clear();
-                        if let Some(entry) =
-                            ClipboardEntry::captured_files(paths, platform::active_app_name())
-                        {
-                            let _ = sender.send(ClipboardEvent::Captured(entry));
-                        }
                     }
-                } else if let Ok(html) = clipboard.get().html() {
-                    let text = clipboard.get_text().unwrap_or_default();
-                    let fingerprint = string_fingerprint(&(text.clone() + "\u{1f}" + &html));
-                    if !html.trim().is_empty() && fingerprint != last_html_fingerprint {
+                }
+            } else if let Ok(html) = clipboard.get().html() {
+                handled = true;
+                let text = clipboard.get_text().unwrap_or_default();
+                let fingerprint = string_fingerprint(&(text.clone() + "\u{1f}" + &html));
+                if !html.trim().is_empty() && fingerprint != last_html_fingerprint {
+                    let entry =
+                        ClipboardEntry::captured_rich_text(text, html, platform::active_app_name());
+                    let sent_or_skipped = match entry {
+                        Some(e) => sender.try_send(ClipboardEvent::Captured(e)).is_ok(),
+                        None => true,
+                    };
+                    if sent_or_skipped {
                         last_html_fingerprint = fingerprint;
                         last_seen.clear();
                         last_image_fingerprint.clear();
                         last_file_fingerprint.clear();
-                        if let Some(entry) = ClipboardEntry::captured_rich_text(
-                            text,
-                            html,
-                            platform::active_app_name(),
-                        ) {
-                            let _ = sender.send(ClipboardEvent::Captured(entry));
-                        }
                     }
-                } else if let Ok(image) = clipboard.get_image() {
-                    let fingerprint = image_fingerprint(image.width, image.height, &image.bytes);
-                    if !fingerprint.is_empty() && fingerprint != last_image_fingerprint {
+                }
+            } else if let Ok(image) = clipboard.get_image() {
+                handled = true;
+                let fingerprint = image_fingerprint(image.width, image.height, &image.bytes);
+                if !fingerprint.is_empty()
+                    && fingerprint != last_image_fingerprint
+                    && let Some(data_url) =
+                        image_to_png_data_url(image.width, image.height, image.bytes.as_ref())
+                {
+                    let entry =
+                        ClipboardEntry::captured_image(data_url, platform::active_app_name());
+                    let sent_or_skipped = match entry {
+                        Some(e) => sender.try_send(ClipboardEvent::Captured(e)).is_ok(),
+                        None => true,
+                    };
+                    if sent_or_skipped {
                         last_image_fingerprint = fingerprint;
+                        last_seen.clear();
                         last_file_fingerprint.clear();
                         last_html_fingerprint.clear();
-                        if let Some(data_url) =
-                            image_to_png_data_url(image.width, image.height, image.bytes.as_ref())
-                        {
-                            last_seen.clear();
-                            if let Some(entry) = ClipboardEntry::captured_image(
-                                data_url,
-                                platform::active_app_name(),
-                            ) {
-                                let _ = sender.send(ClipboardEvent::Captured(entry));
-                            }
-                        }
                     }
-                } else if let Ok(text) = clipboard.get_text() {
-                    if text != last_seen {
-                        last_seen = text.clone();
+                }
+            } else if let Ok(text) = clipboard.get_text() {
+                handled = true;
+                if text != last_seen {
+                    let entry =
+                        ClipboardEntry::captured_text(text.clone(), platform::active_app_name());
+                    let sent_or_skipped = match entry {
+                        Some(e) => sender.try_send(ClipboardEvent::Captured(e)).is_ok(),
+                        None => true,
+                    };
+                    if sent_or_skipped {
+                        last_seen = text;
                         last_image_fingerprint.clear();
                         last_file_fingerprint.clear();
                         last_html_fingerprint.clear();
-                        if let Some(entry) =
-                            ClipboardEntry::captured_text(text, platform::active_app_name())
-                        {
-                            let _ = sender.send(ClipboardEvent::Captured(entry));
-                        }
                     }
                 }
             }
-            Err(err) => {
-                let _ = sender.send(ClipboardEvent::Error(err.to_string()));
-                thread::sleep(Duration::from_secs(2));
-            }
+        }
+        if !handled {
+            clipboard = None;
         }
         thread::sleep(Duration::from_millis(700));
     }
@@ -194,7 +218,7 @@ fn set_file_list_with_xclip(paths: &[PathBuf]) -> Result<(), String> {
         "copy\n{}\n",
         paths
             .iter()
-            .map(path_to_file_uri)
+            .map(|p| path_to_file_uri(p))
             .collect::<Vec<_>>()
             .join("\n")
     );
@@ -235,7 +259,7 @@ fn set_file_list_with_xclip(paths: &[PathBuf]) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn path_to_file_uri(path: &PathBuf) -> String {
+fn path_to_file_uri(path: &Path) -> String {
     let path = path.to_string_lossy();
     format!("file://{}", percent_encode_uri_path(&path))
 }
@@ -267,12 +291,13 @@ fn percent_decode(value: &str) -> String {
     let mut output = Vec::with_capacity(bytes.len());
     let mut index = 0;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let Ok(hex) = u8::from_str_radix(&value[index + 1..index + 3], 16) {
-                output.push(hex);
-                index += 3;
-                continue;
-            }
+        if bytes[index] == b'%'
+            && index + 2 < bytes.len()
+            && let Ok(hex) = u8::from_str_radix(&value[index + 1..index + 3], 16)
+        {
+            output.push(hex);
+            index += 3;
+            continue;
         }
         output.push(bytes[index]);
         index += 1;
@@ -374,5 +399,27 @@ fn decode_base64_byte(byte: u8) -> Result<u8, &'static str> {
         b'+' => Ok(62),
         b'/' => Ok(63),
         _ => Err("base64 字符无效"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ClipboardEvent;
+    use crossbeam_channel::{TrySendError, bounded};
+
+    #[test]
+    fn bounded_channel_rejects_when_full() {
+        let (tx, rx) = bounded::<ClipboardEvent>(2);
+        tx.try_send(ClipboardEvent::ToggleWindow)
+            .expect("first send");
+        tx.try_send(ClipboardEvent::FocusSearch)
+            .expect("second send");
+        assert!(matches!(
+            tx.try_send(ClipboardEvent::Quit),
+            Err(TrySendError::Full(_))
+        ));
+        let drained = rx.try_recv().expect("drain first event");
+        assert!(matches!(drained, ClipboardEvent::ToggleWindow));
+        tx.try_send(ClipboardEvent::Quit).expect("send after drain");
     }
 }

@@ -65,12 +65,12 @@ pub fn macos_range_slider(
     let desired_size = Vec2::new(ui.available_width(), SLIDER_TRACK_H + 12.0);
     let (rect, mut response) = ui.allocate_exact_size(desired_size, egui::Sense::click_and_drag());
 
-    if response.dragged() || response.clicked() {
-        if let Some(mouse_pos) = ui.input(|i| i.pointer.interact_pos()) {
-            let fraction = ((mouse_pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-            *value = range.start() + fraction * (range.end() - range.start());
-            response.mark_changed();
-        }
+    if (response.dragged() || response.clicked())
+        && let Some(mouse_pos) = ui.input(|i| i.pointer.interact_pos())
+    {
+        let fraction = ((mouse_pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+        *value = range.start() + fraction * (range.end() - range.start());
+        response.mark_changed();
     }
 
     if ui.is_rect_visible(rect) {

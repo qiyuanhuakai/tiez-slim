@@ -16,8 +16,23 @@ env:
 
 jobs:
   draft-release:
-    name: Build and create draft release
-    runs-on: ubuntu-latest
+    name: Build and create draft release (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+            deb_arch: amd64
+            rpm_arch: x86_64
+            linuxdeploy_asset: linuxdeploy-x86_64.AppImage
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+            deb_arch: arm64
+            rpm_arch: aarch64
+            linuxdeploy_asset: linuxdeploy-aarch64.AppImage
 
     steps:
       - name: Checkout repository
@@ -34,6 +49,7 @@ jobs:
             libxkbcommon-x11-dev \
             libwayland-dev \
             libgl1-mesa-dev \
+            mold \
             file \
             rpm \
             ruby \
@@ -46,17 +62,59 @@ jobs:
       - name: Cache Cargo artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Verify Cargo.toml version matches tag
+        run: |
+          version="$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')"
+          tag_version="${GITHUB_REF_NAME#v}"
+          if [ "${version}" != "${tag_version}" ]; then
+            echo "::error::Cargo.toml version (${version}) does not match tag ${GITHUB_REF_NAME} (${tag_version})"
+            exit 1
+          fi
+          echo "Cargo.toml version ${version} matches tag ${GITHUB_REF_NAME}"
+
+      - name: Verify icon exists
+        run: |
+          icon="assets/icons/${APP_NAME}.png"
+          if [ ! -f "${icon}" ]; then
+            echo "::error::Required icon file not found: ${icon}"
+            exit 1
+          fi
+          echo "Found icon: ${icon}"
+
       - name: Run tests
         run: cargo test --locked
 
       - name: Build release binary
         run: cargo build --release --locked
 
-      - name: Install packaging tools
+      - name: Cache fpm installation
+        id: cache-fpm
+        uses: actions/cache@v4
+        with:
+          path: |
+            /var/lib/gems
+            /usr/local/bin/fpm
+          key: fpm-${{ runner.os }}-${{ matrix.arch }}
+
+      - name: Install fpm
+        if: steps.cache-fpm.outputs.cache-hit != 'true'
+        run: sudo gem install --no-document fpm
+
+      - name: Verify fpm available
         run: |
-          sudo gem install --no-document fpm
+          if ! command -v fpm >/dev/null 2>&1; then
+            echo "::warning::fpm not on PATH after cache + install, falling back to fresh install"
+            sudo gem install --no-document fpm
+          fi
+          fpm --version
+
+      - name: Install linuxdeploy
+        env:
+          LINUXDEPLOY_VERSION: 2.0.0+git20241005-1
+          LINUXDEPLOY_ASSET: ${{ matrix.linuxdeploy_asset }}
+        run: |
           wget -qO linuxdeploy \
-            https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+            "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/${LINUXDEPLOY_ASSET}"
           chmod +x linuxdeploy
 
       - name: Prepare Linux package metadata
@@ -77,37 +135,40 @@ jobs:
           install -Dm644 "assets/icons/${APP_NAME}.png" "packaging/root/usr/share/icons/hicolor/256x256/apps/${APP_NAME}.png"
 
       - name: Build deb and rpm packages
+        env:
+          DEB_ARCH: ${{ matrix.deb_arch }}
+          RPM_ARCH: ${{ matrix.rpm_arch }}
         run: |
           version="${GITHUB_REF_NAME#v}"
           fpm -s dir -t deb \
             -n "${APP_NAME}" \
             -v "${version}" \
-            --architecture amd64 \
+            --architecture "${DEB_ARCH}" \
             --license GPL-3.0 \
             --description "Lightweight native TieZ clipboard manager" \
             --depends xdotool \
             --maintainer "qiyuanhuakai" \
             --url "https://github.com/qiyuanhuakai/tiez-slim-linux" \
             -C packaging/root \
-            -p "dist/${APP_NAME}_${version}_amd64.deb" \
+            -p "dist/${APP_NAME}_${version}_${DEB_ARCH}.deb" \
             usr
           fpm -s dir -t rpm \
             -n "${APP_NAME}" \
             -v "${version}" \
-            --architecture x86_64 \
+            --architecture "${RPM_ARCH}" \
             --license GPL-3.0 \
             --description "Lightweight native TieZ clipboard manager" \
             --depends xdotool \
             --maintainer "qiyuanhuakai" \
             --url "https://github.com/qiyuanhuakai/tiez-slim-linux" \
             -C packaging/root \
-            -p "dist/${APP_NAME}-${version}-1.x86_64.rpm" \
+            -p "dist/${APP_NAME}-${version}-1.${RPM_ARCH}.rpm" \
             usr
 
       - name: Build AppImage package
         env:
           APPIMAGE_EXTRACT_AND_RUN: 1
-          ARCH: x86_64
+          ARCH: ${{ matrix.arch }}
           NO_STRIP: 1
         run: |
           version="${GITHUB_REF_NAME#v}"
@@ -122,20 +183,37 @@ jobs:
             --output appimage
           appimage_path="$(find . -maxdepth 1 -type f -name '*.AppImage' -print -quit)"
           test -n "${appimage_path}"
-          mv "${appimage_path}" "dist/${APP_NAME}-${version}-x86_64.AppImage"
+          mv "${appimage_path}" "dist/${APP_NAME}-${version}-${ARCH}.AppImage"
 
-      - name: Generate package checksums
+      - name: Smoke test packages
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: 1
+        run: |
+          set -e
+          echo "--- Verifying .deb metadata ---"
+          dpkg-deb -I dist/*.deb
+          echo "--- Verifying .rpm metadata ---"
+          rpm -qpi dist/*.rpm
+          echo "--- Verifying .AppImage ELF ---"
+          file dist/*.AppImage
+          echo "--- Artifact list ---"
+          ls -lh dist/
+
+      - name: Generate per-arch checksums
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
           cd dist
-          sha256sum ./*.deb ./*.rpm ./*.AppImage > "${APP_NAME}-${GITHUB_REF_NAME}-checksums.sha256"
+          sha256sum ./* > "${APP_NAME}-${GITHUB_REF_NAME}-${ARCH}-checksums.sha256"
 
-      - name: Create draft release
+      - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_name }}
           draft: true
           generate_release_notes: true
           files: |
             dist/*.deb
             dist/*.rpm
             dist/*.AppImage
-            dist/${{ env.APP_NAME }}-${{ github.ref_name }}-checksums.sha256
+            dist/${APP_NAME}-${{ github.ref_name }}-${{ matrix.arch }}-checksums.sha256

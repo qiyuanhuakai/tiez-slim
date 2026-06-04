@@ -20,13 +20,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test-build:
-    name: Test and build
+  test:
+    name: Run tests
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          persist-credentials: false
 
       - name: Install Linux build dependencies
         run: |
@@ -38,7 +39,8 @@ jobs:
             libxkbcommon-dev \
             libxkbcommon-x11-dev \
             libwayland-dev \
-            libgl1-mesa-dev
+            libgl1-mesa-dev \
+            mold
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -49,5 +51,77 @@ jobs:
       - name: Run tests
         run: cargo test --locked
 
+  lint:
+    name: Format and clippy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libx11-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libgl1-mesa-dev \
+            mold
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+  build-debug:
+    name: Build debug binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config \
+            libx11-dev \
+            libxcb1-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libwayland-dev \
+            libgl1-mesa-dev \
+            mold
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
       - name: Build debug binary
         run: cargo build --locked
+
+      - name: Upload debug binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiez-slim-linux-debug
+          path: target/debug/tiez-slim-linux
+          if-no-files-found: error
+          retention-days: 7

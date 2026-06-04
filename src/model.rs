@@ -1,6 +1,7 @@
 use chrono::{DateTime, Local, TimeZone};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 pub const MAX_ENTRIES: usize = 1_000;
@@ -56,7 +57,7 @@ fn is_password_like(value: &str) -> bool {
 /// Rule-based sensitive detection with pluggable kinds and custom regex rules.
 pub fn looks_sensitive_with_rules(
     text: &str,
-    enabled_kinds: &[String],
+    enabled_kinds: &[&str],
     custom_rules: &[Regex],
 ) -> bool {
     if text.len() > 5000 {
@@ -64,31 +65,21 @@ pub fn looks_sensitive_with_rules(
     }
 
     for kind in enabled_kinds {
-        match kind.as_str() {
-            "phone" => {
-                if phone_re().is_match(text) {
-                    return true;
-                }
+        match *kind {
+            "phone" if phone_re().is_match(text) => {
+                return true;
             }
-            "idcard" => {
-                if idcard_re().is_match(text) {
-                    return true;
-                }
+            "idcard" if idcard_re().is_match(text) => {
+                return true;
             }
-            "email" => {
-                if email_re().is_match(text) {
-                    return true;
-                }
+            "email" if email_re().is_match(text) => {
+                return true;
             }
-            "secret" => {
-                if secret_re().is_match(text) {
-                    return true;
-                }
+            "secret" if secret_re().is_match(text) => {
+                return true;
             }
-            "password" => {
-                if is_password_like(text) {
-                    return true;
-                }
+            "password" if is_password_like(text) => {
+                return true;
             }
             _ => {}
         }
@@ -204,6 +195,63 @@ pub struct ClipboardEntry {
     pub pinned_order: i64,
 }
 
+/// Lightweight projection of [`ClipboardEntry`] used for list rendering.
+///
+/// Excludes the bulky `content` and `html_content` fields so a large history
+/// can be listed cheaply. The full entry can be loaded on demand via
+/// `Storage::get_entry(id)`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClipboardEntrySummary {
+    pub id: i64,
+    pub kind: ClipboardKind,
+    pub source_app: String,
+    pub source_app_path: Option<String>,
+    pub timestamp: i64,
+    pub preview: String,
+    pub is_pinned: bool,
+    pub tags: Vec<String>,
+    pub use_count: i64,
+    pub is_external: bool,
+    pub pinned_order: i64,
+    pub sensitive: bool,
+}
+
+impl ClipboardEntrySummary {
+    pub fn is_sensitive(&self) -> bool {
+        self.sensitive
+    }
+
+    pub fn formatted_time(&self) -> String {
+        let dt: DateTime<Local> = Local
+            .timestamp_millis_opt(self.timestamp)
+            .single()
+            .unwrap_or_else(Local::now);
+        dt.format("%m-%d %H:%M:%S").to_string()
+    }
+}
+
+/// Project a full entry into a [`ClipboardEntrySummary`], dropping
+/// `content` and `html_content`. The `sensitive` flag is taken from
+/// `entry.is_sensitive()`, which is also what `Storage::save_entry_with_dedup`
+/// stores in the `sensitive` column at write time.
+#[allow(dead_code)]
+pub fn make_summary(entry: &ClipboardEntry) -> ClipboardEntrySummary {
+    ClipboardEntrySummary {
+        id: entry.id,
+        kind: entry.kind.clone(),
+        source_app: entry.source_app.clone(),
+        source_app_path: entry.source_app_path.clone(),
+        timestamp: entry.timestamp,
+        preview: entry.preview.clone(),
+        is_pinned: entry.is_pinned,
+        tags: entry.tags.clone(),
+        use_count: entry.use_count,
+        is_external: entry.is_external,
+        pinned_order: entry.pinned_order,
+        sensitive: entry.is_sensitive(),
+    }
+}
+
 impl ClipboardEntry {
     pub fn captured_text(content: String, source_app: String) -> Option<Self> {
         let trimmed = content.trim_matches('\0').trim().to_string();
@@ -214,7 +262,7 @@ impl ClipboardEntry {
         Some(Self {
             id: 0,
             kind: detect_kind(&trimmed),
-            preview: make_preview(&trimmed, 500),
+            preview: make_preview(&trimmed, 500).into_owned(),
             content: trimmed,
             html_content: None,
             source_app,
@@ -266,7 +314,7 @@ impl ClipboardEntry {
         Some(Self {
             id: 0,
             kind: ClipboardKind::RichText,
-            preview: make_preview(&preview_source, 500),
+            preview: make_preview(&preview_source, 500).into_owned(),
             content: preview_source,
             html_content: Some(trimmed_html),
             source_app,
@@ -307,7 +355,7 @@ impl ClipboardEntry {
         Some(Self {
             id: 0,
             kind,
-            preview: make_preview(&preview, 500),
+            preview: make_preview(&preview, 500).into_owned(),
             content,
             html_content: None,
             source_app,
@@ -346,23 +394,59 @@ impl ClipboardEntry {
 }
 
 fn detect_kind(value: &str) -> ClipboardKind {
-    let lower = value.to_ascii_lowercase();
-    if lower.starts_with("data:image/") {
+    // Fast path: case-sensitive prefix checks on the original value avoid
+    // the full `to_ascii_lowercase()` allocation for the common case where
+    // URLs / file paths / data URLs are already lowercase (the convention).
+    if value.starts_with("data:image/") {
         return ClipboardKind::Image;
     }
-    if lower.starts_with("data:video/") {
+    if value.starts_with("data:video/") {
         return ClipboardKind::Video;
     }
-    if lower.starts_with("file://") || value.lines().all(looks_like_file_path) {
+    if value.starts_with("file://") {
         return ClipboardKind::File;
     }
-    if lower.starts_with("http://") || lower.starts_with("https://") {
+    if value.starts_with("http://") || value.starts_with("https://") {
         return ClipboardKind::Url;
     }
+    if value.lines().all(looks_like_file_path) {
+        return ClipboardKind::File;
+    }
+
+    // Slow path: case-insensitive fallback for less common uppercase prefixes
+    // (e.g. `HTTP://` or `Data:Image/...`). Uses a byte-wise compare helper
+    // that does not allocate a lowercased copy of the value.
+    if starts_with_ignore_ascii_case(value, "data:image/") {
+        return ClipboardKind::Image;
+    }
+    if starts_with_ignore_ascii_case(value, "data:video/") {
+        return ClipboardKind::Video;
+    }
+    if starts_with_ignore_ascii_case(value, "file://") {
+        return ClipboardKind::File;
+    }
+    if starts_with_ignore_ascii_case(value, "http://")
+        || starts_with_ignore_ascii_case(value, "https://")
+    {
+        return ClipboardKind::Url;
+    }
+
     if looks_like_code(value) {
         return ClipboardKind::Code;
     }
     ClipboardKind::Text
+}
+
+/// Byte-wise case-insensitive prefix check that does not allocate.
+fn starts_with_ignore_ascii_case(value: &str, prefix: &str) -> bool {
+    if value.len() < prefix.len() {
+        return false;
+    }
+    value
+        .as_bytes()
+        .iter()
+        .zip(prefix.as_bytes().iter())
+        .all(|(a, b)| a.eq_ignore_ascii_case(b))
 }
 
 fn looks_like_file_path(value: &str) -> bool {
@@ -403,6 +487,9 @@ fn strip_html_tags(value: &str) -> String {
 }
 
 fn looks_like_code(value: &str) -> bool {
+    if value.len() > 8192 {
+        return false;
+    }
     let mut score = 0u32;
     for kw in CODE_KEYWORDS {
         if value.contains(kw) {
@@ -421,18 +508,30 @@ fn looks_like_code(value: &str) -> bool {
     score >= 2
 }
 
-fn looks_sensitive(value: &str) -> bool {
-    let default_kinds: Vec<String> = ["phone", "idcard", "email", "secret", "password"]
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
-    looks_sensitive_with_rules(value, &default_kinds, &[])
+pub(crate) fn looks_sensitive(value: &str) -> bool {
+    const DEFAULT_KINDS: &[&str] = &["phone", "idcard", "email", "secret", "password"];
+    looks_sensitive_with_rules(value, DEFAULT_KINDS, &[])
 }
 
-pub fn make_preview(value: &str, limit: usize) -> String {
+pub fn make_preview(value: &str, limit: usize) -> Cow<'_, str> {
+    // Fast path: a value with no ASCII whitespace needs no compaction, so
+    // skip the `split_whitespace().collect::<Vec<_>>().join(" ")` round-trip
+    // (which allocates a `Vec<&str>` and a new `String`).
+    if !value.bytes().any(|b| b.is_ascii_whitespace()) {
+        if value.chars().count() <= limit {
+            return Cow::Borrowed(value);
+        }
+        let mut out = value
+            .chars()
+            .take(limit.saturating_sub(3))
+            .collect::<String>();
+        out.push_str("...");
+        return Cow::Owned(out);
+    }
+
     let compact = value.split_whitespace().collect::<Vec<_>>().join(" ");
     if compact.chars().count() <= limit {
-        return compact;
+        return Cow::Owned(compact);
     }
 
     let mut out = compact
@@ -440,7 +539,7 @@ pub fn make_preview(value: &str, limit: usize) -> String {
         .take(limit.saturating_sub(3))
         .collect::<String>();
     out.push_str("...");
-    out
+    Cow::Owned(out)
 }
 
 #[cfg(test)]
@@ -576,11 +675,17 @@ mod tests {
         assert!(looks_like_code("struct Foo { bar: i32 }"));
     }
 
+    #[test]
+    fn looks_like_code_rejects_long_single_line_text() {
+        let long = "a".repeat(8193);
+        assert!(!looks_like_code(&long));
+    }
+
     // ── looks_sensitive_with_rules ──
 
     #[test]
     fn looks_sensitive_with_rules_phone() {
-        let kinds = vec!["phone".to_string()];
+        let kinds = ["phone"];
         assert!(looks_sensitive_with_rules(
             "call me at 13812345678",
             &kinds,
@@ -591,7 +696,7 @@ mod tests {
 
     #[test]
     fn looks_sensitive_with_rules_email() {
-        let kinds = vec!["email".to_string()];
+        let kinds = ["email"];
         assert!(looks_sensitive_with_rules(
             "send to user@example.com",
             &kinds,
@@ -601,14 +706,14 @@ mod tests {
 
     #[test]
     fn looks_sensitive_with_rules_password() {
-        let kinds = vec!["password".to_string()];
+        let kinds = ["password"];
         assert!(looks_sensitive_with_rules("Abcdef1!", &kinds, &[]));
         assert!(!looks_sensitive_with_rules("plaintext", &kinds, &[]));
     }
 
     #[test]
     fn looks_sensitive_with_rules_skips_long_text() {
-        let kinds = vec!["phone".to_string()];
+        let kinds = ["phone"];
         let long_text = "x".repeat(5001);
         assert!(!looks_sensitive_with_rules(&long_text, &kinds, &[]));
     }
@@ -626,20 +731,17 @@ mod tests {
 
     #[test]
     fn looks_sensitive_with_rules_all_five_kinds() {
-        let all_kinds: Vec<String> = ["phone", "idcard", "email", "secret", "password"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect();
-        assert!(looks_sensitive_with_rules("13812345678", &all_kinds, &[]));
+        let all_kinds: &[&str] = &["phone", "idcard", "email", "secret", "password"];
+        assert!(looks_sensitive_with_rules("13812345678", all_kinds, &[]));
         assert!(looks_sensitive_with_rules(
             "user@example.com",
-            &all_kinds,
+            all_kinds,
             &[]
         ));
-        assert!(looks_sensitive_with_rules("Abcdef1!", &all_kinds, &[]));
+        assert!(looks_sensitive_with_rules("Abcdef1!", all_kinds, &[]));
         assert!(!looks_sensitive_with_rules(
             "plain text nothing",
-            &all_kinds,
+            all_kinds,
             &[]
         ));
     }
@@ -726,5 +828,36 @@ mod tests {
     #[test]
     fn looks_sensitive_rejects_plain_text() {
         assert!(!looks_sensitive("hello world"));
+    }
+
+    // ── make_summary ──
+
+    #[test]
+    fn make_summary_drops_content_and_html_content() {
+        let mut entry = ClipboardEntry::captured_text("hello world".to_string(), "src".to_string())
+            .expect("valid entry");
+        entry.id = 42;
+        entry.tags.push("note".to_string());
+        entry.use_count = 7;
+        entry.is_pinned = true;
+
+        let summary = make_summary(&entry);
+        assert_eq!(summary.id, 42);
+        assert_eq!(summary.kind, ClipboardKind::Text);
+        assert_eq!(summary.source_app, "src");
+        assert_eq!(summary.preview, entry.preview);
+        assert_eq!(summary.tags, vec!["note".to_string()]);
+        assert_eq!(summary.use_count, 7);
+        assert!(summary.is_pinned);
+        assert!(!summary.is_sensitive());
+    }
+
+    #[test]
+    fn make_summary_propagates_sensitive_flag() {
+        let entry =
+            ClipboardEntry::captured_text("call 13812345678".to_string(), "src".to_string())
+                .expect("valid entry");
+        let summary = make_summary(&entry);
+        assert!(summary.is_sensitive());
     }
 }

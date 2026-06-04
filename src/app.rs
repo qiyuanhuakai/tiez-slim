@@ -1,13 +1,14 @@
 use crate::clipboard::{self, ClipboardEvent};
-use crate::model::{ClipboardEntry, ClipboardKind};
+use crate::model::{ClipboardEntry, ClipboardEntrySummary, ClipboardKind};
 use crate::platform;
 use crate::storage::Storage;
 use crate::ui::MacosTokens;
 use crate::ui::widgets::{macos_collapsible_group, macos_range_slider, macos_toggle};
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, Sender, bounded};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -25,6 +26,57 @@ const RESIZE_HIT_SIZE: f32 = 8.0;
 const CARD_ACTION_WIDTH: f32 = 92.0;
 const TOOLBAR_BUTTON_SIZE: f32 = 34.0;
 const CARD_ACTION_BUTTON_SIZE: f32 = 24.0;
+const FULL_ENTRY_CACHE_CAP: usize = 64;
+const EVENT_CHANNEL_CAPACITY: usize = 100;
+const CLEANUP_INTERVAL: Duration = Duration::from_secs(6 * 3600);
+const ACTIVITY_REPAINT_WINDOW: Duration = Duration::from_millis(500);
+
+struct FullEntryCache {
+    map: HashMap<i64, ClipboardEntry>,
+    order: VecDeque<i64>,
+    cap: usize,
+}
+
+impl FullEntryCache {
+    fn new(cap: usize) -> Self {
+        Self {
+            map: HashMap::with_capacity(cap),
+            order: VecDeque::with_capacity(cap),
+            cap,
+        }
+    }
+
+    fn get(&self, id: i64) -> Option<&ClipboardEntry> {
+        self.map.get(&id)
+    }
+
+    fn insert(&mut self, id: i64, entry: ClipboardEntry) {
+        if let std::collections::hash_map::Entry::Occupied(mut e) = self.map.entry(id) {
+            e.insert(entry);
+            self.order.retain(|existing| *existing != id);
+            self.order.push_back(id);
+            return;
+        }
+        while self.map.len() >= self.cap {
+            let Some(old_id) = self.order.pop_front() else {
+                break;
+            };
+            self.map.remove(&old_id);
+        }
+        self.map.insert(id, entry);
+        self.order.push_back(id);
+    }
+
+    fn invalidate(&mut self, id: i64) {
+        self.map.remove(&id);
+        self.order.retain(|existing| *existing != id);
+    }
+
+    fn clear(&mut self) {
+        self.map.clear();
+        self.order.clear();
+    }
+}
 
 fn scale_alpha(color: egui::Color32, factor: f32) -> egui::Color32 {
     let [r, g, b, a] = color.to_array();
@@ -57,14 +109,16 @@ enum AppPage {
     Settings,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 enum EmojiTab {
+    #[default]
     Emoji,
     Favorites,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 enum DockMode {
+    #[default]
     Off,
     Left,
     Right,
@@ -85,18 +139,6 @@ enum CardAction {
     TogglePin,
     Open,
     Delete,
-}
-
-impl Default for DockMode {
-    fn default() -> Self {
-        Self::Off
-    }
-}
-
-impl Default for EmojiTab {
-    fn default() -> Self {
-        Self::Emoji
-    }
 }
 
 const EMOJI_GROUPS: &[(&str, &[&str])] = &[
@@ -287,9 +329,12 @@ pub struct ClipboardApp {
     storage: Storage,
     event_sender: Sender<ClipboardEvent>,
     events: Receiver<ClipboardEvent>,
-    entries: Vec<ClipboardEntry>,
+    entries: Vec<ClipboardEntrySummary>,
+    full_entry_cache: RefCell<FullEntryCache>,
     query: String,
     status: String,
+    last_activity: Instant,
+    last_cleanup: Instant,
     selected_id: Option<i64>,
     tag_editor: String,
     new_tag_input: String,
@@ -379,7 +424,7 @@ impl ClipboardApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         configure_fonts(&cc.egui_ctx);
 
-        let (sender, events) = unbounded();
+        let (sender, events) = bounded(EVENT_CHANNEL_CAPACITY);
         clipboard::start_watcher(sender.clone());
         let preferences = load_preferences(&storage);
         let hotkey_handle = platform::start_hotkey_listener(
@@ -407,7 +452,10 @@ impl ClipboardApp {
             event_sender: sender,
             events,
             entries: Vec::new(),
+            full_entry_cache: RefCell::new(FullEntryCache::new(FULL_ENTRY_CACHE_CAP)),
             query: String::new(),
+            last_activity: Instant::now(),
+            last_cleanup: Instant::now(),
             status: platform::platform_note().to_string(),
             selected_id: None,
             tag_editor: String::new(),
@@ -525,15 +573,15 @@ impl ClipboardApp {
             .tag_filter
             .as_deref()
             .filter(|_| self.tag_manager_enabled);
-        let entries = if self.kind_filter.is_none() && active_tag_filter.is_none() {
-            self.storage.list(&self.query)
-        } else {
-            self.storage
-                .list_filtered(&self.query, self.kind_filter.as_ref(), active_tag_filter)
-        };
+        let entries = self.storage.list_summaries_filtered(
+            &self.query,
+            self.kind_filter.as_ref(),
+            active_tag_filter,
+        );
         match entries {
             Ok(entries) => {
                 self.entries = entries;
+                self.full_entry_cache.borrow_mut().clear();
                 self.ensure_selection();
             }
             Err(err) => self.status = format!("读取历史失败: {err}"),
@@ -550,9 +598,18 @@ impl ClipboardApp {
         self.sync_tag_editor();
     }
 
-    fn selected_entry(&self) -> Option<&ClipboardEntry> {
+    fn selected_entry(&self) -> Option<ClipboardEntrySummary> {
         self.selected_id
-            .and_then(|id| self.entries.iter().find(|entry| entry.id == id))
+            .and_then(|id| self.entries.iter().find(|entry| entry.id == id).cloned())
+    }
+
+    fn get_full_entry(&self, id: i64) -> Option<ClipboardEntry> {
+        if let Some(entry) = self.full_entry_cache.borrow().get(id) {
+            return Some(entry.clone());
+        }
+        let entry = self.storage.get_entry(id).ok().flatten()?;
+        self.full_entry_cache.borrow_mut().insert(id, entry.clone());
+        Some(entry)
     }
 
     fn sync_tag_editor(&mut self) {
@@ -571,6 +628,7 @@ impl ClipboardApp {
         let mut changed = false;
         while let Ok(event) = self.events.try_recv() {
             self.event_count += 1;
+            self.last_activity = Instant::now();
             match event {
                 ClipboardEvent::Captured(entry) => {
                     if matches!(entry.kind, ClipboardKind::File | ClipboardKind::Video)
@@ -651,10 +709,15 @@ impl ClipboardApp {
     fn paste_entry(
         &mut self,
         ctx: &egui::Context,
-        entry: &ClipboardEntry,
+        summary: &ClipboardEntrySummary,
         paste_with_format: bool,
     ) {
-        match clipboard::set_entry(entry, paste_with_format) {
+        let Some(entry) = self.get_full_entry(summary.id) else {
+            self.status = "无法加载完整内容".to_string();
+            return;
+        };
+        self.last_activity = Instant::now();
+        match clipboard::set_entry(&entry, paste_with_format) {
             Ok(()) => {
                 let prefer_formatted = paste_with_format
                     || matches!(
@@ -723,31 +786,30 @@ impl ClipboardApp {
     }
 
     fn paste_selected(&mut self, ctx: &egui::Context) {
-        if let Some(entry) = self.selected_entry().cloned() {
-            self.paste_entry(ctx, &entry, false);
+        if let Some(summary) = self.selected_entry() {
+            self.paste_entry(ctx, &summary, false);
         }
     }
 
     fn paste_latest_rich(&mut self, ctx: &egui::Context) {
-        if let Some(entry) = self.entries.first().cloned() {
-            self.select_entry(entry.id);
-            self.paste_entry(ctx, &entry, true);
+        if let Some(summary) = self.entries.first().cloned() {
+            self.select_entry(summary.id);
+            self.paste_entry(ctx, &summary, true);
         } else {
             self.status = "没有可富文本粘贴的历史".to_string();
         }
     }
 
     fn sequential_paste(&mut self, ctx: &egui::Context) {
-        let Some(entry) = self
+        let Some(summary) = self
             .selected_entry()
-            .cloned()
             .or_else(|| self.entries.first().cloned())
         else {
             self.status = "没有可顺序粘贴的历史".to_string();
             return;
         };
-        self.select_entry(entry.id);
-        self.paste_entry(ctx, &entry, false);
+        self.select_entry(summary.id);
+        self.paste_entry(ctx, &summary, false);
         self.move_selection(1);
     }
 
@@ -936,7 +998,7 @@ impl ClipboardApp {
         egui::vec2(candidate.x.min(max_size.x), candidate.y.min(max_size.y))
     }
 
-    fn process_edge_docking(&mut self, ctx: &egui::Context) {
+    fn process_edge_docking(&mut self, ctx: &egui::Context, mouse: Option<(f32, f32)>) {
         if self.edge_docking == DockMode::Off {
             if let Some(pending) = self.pending_edge_hide.take() {
                 self.restore_from_pending_edge_hide(ctx, pending);
@@ -960,7 +1022,7 @@ impl ClipboardApp {
             height: 800.0,
         });
         if self.edge_hidden {
-            if self.mouse_near_hidden_edge(screen) {
+            if self.mouse_near_hidden_edge(screen, mouse) {
                 self.reveal_edge_hidden(ctx, false);
             }
             return;
@@ -978,7 +1040,7 @@ impl ClipboardApp {
             self.edge_hide_armed = true;
             return;
         }
-        if self.mouse_inside_viewport_rect(ctx, rect) {
+        if self.mouse_inside_viewport_rect(ctx, rect, mouse) {
             self.edge_hide_armed = true;
             return;
         }
@@ -1111,8 +1173,12 @@ impl ClipboardApp {
         }
     }
 
-    fn mouse_near_hidden_edge(&self, screen: platform::ScreenGeometry) -> bool {
-        let Some((x, y)) = platform::mouse_position() else {
+    fn mouse_near_hidden_edge(
+        &self,
+        screen: platform::ScreenGeometry,
+        mouse: Option<(f32, f32)>,
+    ) -> bool {
+        let Some((x, y)) = mouse else {
             return false;
         };
         let threshold = 6.0;
@@ -1125,8 +1191,13 @@ impl ClipboardApp {
         }
     }
 
-    fn mouse_inside_viewport_rect(&self, ctx: &egui::Context, rect: egui::Rect) -> bool {
-        let Some((x, y)) = platform::mouse_position() else {
+    fn mouse_inside_viewport_rect(
+        &self,
+        ctx: &egui::Context,
+        rect: egui::Rect,
+        mouse: Option<(f32, f32)>,
+    ) -> bool {
+        let Some((x, y)) = mouse else {
             return false;
         };
         let ppp = ctx.pixels_per_point().max(1.0);
@@ -1169,8 +1240,13 @@ impl ClipboardApp {
         self.status = "已展开贴边窗口".to_string();
     }
 
-    fn open_entry(&mut self, entry: &ClipboardEntry) {
-        match self.entry_open_target(entry) {
+    fn open_entry(&mut self, summary: &ClipboardEntrySummary) {
+        let Some(entry) = self.get_full_entry(summary.id) else {
+            self.status = format!("无法加载完整内容 (id={})", summary.id);
+            return;
+        };
+        self.last_activity = Instant::now();
+        match self.entry_open_target(&entry) {
             Ok(target) => {
                 let app = self.default_app_for_kind(&entry.kind).trim().to_string();
                 let result = if app.is_empty() {
@@ -1323,7 +1399,7 @@ impl ClipboardApp {
             search_hotkey: self.search_hotkey.clone(),
             hide_tray_icon: self.hide_tray_icon,
             close_to_tray: self.close_to_tray,
-            edge_docking: self.edge_docking.clone(),
+            edge_docking: self.edge_docking,
             follow_mouse: self.follow_mouse,
             default_text_app: self.default_text_app.clone(),
             default_url_app: self.default_url_app.clone(),
@@ -1775,7 +1851,7 @@ impl ClipboardApp {
                 if self.current_page == AppPage::Clipboard && self.show_search_box {
                     ui.add_space(8.0);
                     let available_width = ui.available_width().max(0.0);
-                    let content_width = available_width.min(HISTORY_MAX_WIDTH).max(120.0);
+                    let content_width = available_width.clamp(120.0, HISTORY_MAX_WIDTH);
                     let left_padding = ((available_width - content_width) / 2.0).max(0.0);
                     ui.horizontal(|ui| {
                         ui.add_space(left_padding);
@@ -1900,20 +1976,26 @@ impl ClipboardApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let available_width = ui.available_width().max(0.0);
-                let content_width = available_width.min(HISTORY_MAX_WIDTH).max(120.0);
+                let content_width = available_width.clamp(120.0, HISTORY_MAX_WIDTH);
                 let left_padding = ((available_width - content_width) / 2.0).max(0.0);
-                let entries = self.entries.clone();
-                for entry in entries {
+                // Detach the entries vec for the duration of the loop so the
+                // immutable borrow of self.entries does not overlap with the
+                // mutable borrow needed by history_card's action handlers.
+                // mem::take swaps in an empty Vec and is just a header move,
+                // no element clones happen.
+                let entries = std::mem::take(&mut self.entries);
+                for entry in &entries {
                     ui.horizontal(|ui| {
                         ui.add_space(left_padding);
                         ui.vertical(|ui| {
                             ui.set_width(content_width);
                             ui.set_max_width(content_width);
-                            self.history_card(ui, &entry);
+                            self.history_card(ui, entry);
                         });
                     });
                     ui.add_space(if self.compact_rows { 2.0 } else { 5.0 });
                 }
+                self.entries = entries;
                 if self.show_detail_panel {
                     ui.add_space(8.0);
                     self.draw_detail(ui);
@@ -1921,7 +2003,7 @@ impl ClipboardApp {
             });
     }
 
-    fn history_card(&mut self, ui: &mut egui::Ui, entry: &ClipboardEntry) {
+    fn history_card(&mut self, ui: &mut egui::Ui, entry: &ClipboardEntrySummary) {
         let card_width = ui.available_width().min(HISTORY_MAX_WIDTH);
         let selected = self.selected_id == Some(entry.id);
         let sensitive = self.privacy_protection && entry.is_sensitive();
@@ -1988,7 +2070,7 @@ impl ClipboardApp {
                         let text = if sensitive && !self.show_sensitive {
                             masked_preview(&entry.preview)
                         } else {
-                            row_preview_text(entry)
+                            row_preview_text(entry).into_owned()
                         };
                         ui.add(
                             egui::Label::new(
@@ -2107,20 +2189,21 @@ impl ClipboardApp {
                 },
                 CardAction::Open => {
                     self.select_entry(entry_id);
-                    if let Some(entry) = self.entries.iter().find(|e| e.id == entry_id).cloned() {
-                        self.open_entry(&entry);
+                    self.open_entry(entry);
+                }
+                CardAction::Delete => {
+                    self.full_entry_cache.borrow_mut().invalidate(entry_id);
+                    match self.storage.delete(entry_id) {
+                        Ok(()) => {
+                            self.status = "已删除记录".to_string();
+                            if self.selected_id == Some(entry_id) {
+                                self.selected_id = None;
+                            }
+                            self.refresh_entries();
+                        }
+                        Err(err) => self.status = format!("删除失败: {err}"),
                     }
                 }
-                CardAction::Delete => match self.storage.delete(entry_id) {
-                    Ok(()) => {
-                        self.status = "已删除记录".to_string();
-                        if self.selected_id == Some(entry_id) {
-                            self.selected_id = None;
-                        }
-                        self.refresh_entries();
-                    }
-                    Err(err) => self.status = format!("删除失败: {err}"),
-                },
             }
             return;
         }
@@ -2135,8 +2218,8 @@ impl ClipboardApp {
         }
     }
 
-    fn draw_image_thumbnail(&mut self, ui: &mut egui::Ui, entry: &ClipboardEntry) {
-        if let Some(texture) = self.image_texture(ui.ctx(), entry) {
+    fn draw_image_thumbnail(&mut self, ui: &mut egui::Ui, summary: &ClipboardEntrySummary) {
+        if let Some(texture) = self.image_texture(ui.ctx(), summary) {
             let size = fit_texture_size(texture.size_vec2(), egui::vec2(68.0, 52.0));
             egui::Frame::none()
                 .fill(self.theme.data_bg)
@@ -2156,32 +2239,37 @@ impl ClipboardApp {
     fn image_texture(
         &mut self,
         ctx: &egui::Context,
-        entry: &ClipboardEntry,
+        summary: &ClipboardEntrySummary,
     ) -> Option<egui::TextureHandle> {
-        if let Some(texture) = self.image_textures.get(&entry.id) {
+        if let Some(texture) = self.image_textures.get(&summary.id) {
             return Some(texture.clone());
         }
-        let bytes = image_bytes_for_entry(entry)?;
+        let entry = self.get_full_entry(summary.id)?;
+        let bytes = image_bytes_for_entry(&entry)?;
         let image = image::load_from_memory(&bytes).ok()?.to_rgba8();
         let size = [image.width() as usize, image.height() as usize];
         let color_image = egui::ColorImage::from_rgba_unmultiplied(size, image.as_raw());
         let texture = ctx.load_texture(
-            format!("clipboard-image-{}", entry.id),
+            format!("clipboard-image-{}", summary.id),
             color_image,
             egui::TextureOptions::LINEAR,
         );
-        self.image_textures.insert(entry.id, texture.clone());
+        self.image_textures.insert(summary.id, texture.clone());
         Some(texture)
     }
 
     fn draw_detail(&mut self, ui: &mut egui::Ui) {
-        let Some(entry) = self.selected_entry().cloned() else {
+        let Some(summary) = self.selected_entry() else {
             empty_state(
                 ui,
                 "未选择记录",
                 "从左侧选择一条历史记录查看完整内容和操作。",
                 &self.theme,
             );
+            return;
+        };
+        let Some(entry) = self.get_full_entry(summary.id) else {
+            empty_state(ui, "无法加载内容", "条目可能已被删除。", &self.theme);
             return;
         };
 
@@ -2192,7 +2280,7 @@ impl ClipboardApp {
                     self.delete_selected();
                 }
                 if ui
-                    .button(if entry.is_pinned {
+                    .button(if summary.is_pinned {
                         "取消置顶"
                     } else {
                         "置顶"
@@ -2202,10 +2290,10 @@ impl ClipboardApp {
                     self.toggle_selected_pin();
                 }
                 if ui.button("复制并粘贴").clicked() {
-                    self.paste_entry(ui.ctx(), &entry, false);
+                    self.paste_entry(ui.ctx(), &summary, false);
                 }
                 if ui.button("打开").clicked() {
-                    self.open_entry(&entry);
+                    self.open_entry(&summary);
                 }
             });
         });
@@ -2256,7 +2344,7 @@ impl ClipboardApp {
         ui.add_space(12.0);
         ui.label(egui::RichText::new("内容").strong());
         let content_is_masked =
-            self.privacy_protection && entry.is_sensitive() && !self.show_sensitive;
+            self.privacy_protection && summary.is_sensitive() && !self.show_sensitive;
         let display_content = if content_is_masked {
             masked_preview(&entry.content)
         } else {
@@ -2484,7 +2572,7 @@ impl ClipboardApp {
                     });
                 });
             });
-            if expanded != !prev {
+            if expanded == prev {
                 self.settings_panel_collapsed[0] = !expanded;
                 self.persist_preferences();
             }
@@ -2524,7 +2612,7 @@ impl ClipboardApp {
                     self.status = "正在录制搜索聚焦快捷键".to_string();
                 });
             });
-            if expanded != !prev {
+            if expanded == prev {
                 self.settings_panel_collapsed[1] = !expanded;
                 self.persist_preferences();
             }
@@ -2595,7 +2683,7 @@ impl ClipboardApp {
                 }
                 ui.label(egui::RichText::new("当前已落地：文本、富文本 HTML、图片、文件剪贴板捕获/写回；粘贴模拟按 tiez-slim 使用 Shift+Insert/Ctrl+V。" ).color(self.theme.muted));
             });
-            if expanded != !prev {
+            if expanded == prev {
                 self.settings_panel_collapsed[2] = !expanded;
                 self.persist_preferences();
             }
@@ -2678,7 +2766,7 @@ impl ClipboardApp {
                 }
                 ui.label("左键点击/Enter：复制并粘贴；右键点击：带格式复制并粘贴；Delete 删除；↑/↓ 切换选中。");
             });
-            if expanded != !prev {
+            if expanded == prev {
                 self.settings_panel_collapsed[3] = !expanded;
                 self.persist_preferences();
             }
@@ -2710,7 +2798,7 @@ impl ClipboardApp {
                     self.persist_preferences();
                 }
             });
-            if expanded != !prev {
+            if expanded == prev {
                 self.settings_panel_collapsed[4] = !expanded;
                 self.persist_preferences();
             }
@@ -2731,7 +2819,7 @@ impl ClipboardApp {
                     ui.label(egui::RichText::new("标签管理关闭时不显示标签过滤。").color(self.theme.muted));
                 }
             });
-            if expanded != !prev {
+            if expanded == prev {
                 self.settings_panel_collapsed[5] = !expanded;
                 self.persist_preferences();
             }
@@ -2917,17 +3005,16 @@ impl ClipboardApp {
                                         )
                                         .desired_width(80.0),
                                         );
-                                        if color_response.changed() {
-                                            if let Err(err) = self
+                                        if color_response.changed()
+                                            && let Err(err) = self
                                                 .storage
                                                 .update_saved_tag_color(
                                                     sel,
                                                     &self.tag_detail_color,
                                                 )
-                                            {
-                                                self.status =
-                                                    format!("更新颜色失败: {err}");
-                                            }
+                                        {
+                                            self.status =
+                                                format!("更新颜色失败: {err}");
                                         }
                                     });
 
@@ -2974,7 +3061,7 @@ impl ClipboardApp {
                     });
                 });
             });
-            if expanded != !prev {
+            if expanded == prev {
                 self.settings_panel_collapsed[6] = !expanded;
                 self.persist_preferences();
             }
@@ -3059,7 +3146,7 @@ impl ClipboardApp {
                     }
                 }
             });
-            if expanded != !prev {
+            if expanded == prev {
                 self.settings_panel_collapsed[7] = !expanded;
                 self.persist_preferences();
             }
@@ -3530,7 +3617,10 @@ impl eframe::App for ClipboardApp {
         self.handle_shortcuts(ctx);
         self.drain_events(ctx);
         self.process_pending_paste(ctx);
-        self.process_edge_docking(ctx);
+        // Sample the pointer once per frame so edge-docking doesn't reissue
+        // the X11 query for every internal check.
+        let mouse = platform::mouse_position();
+        self.process_edge_docking(ctx, mouse);
         if self.edge_hidden || self.pending_edge_hide.is_some() {
             ctx.request_repaint_after(std::time::Duration::from_millis(120));
             return;
@@ -3592,7 +3682,17 @@ impl eframe::App for ClipboardApp {
 
         self.draw_dev_panel(ctx, frame);
 
-        ctx.request_repaint_after(std::time::Duration::from_millis(500));
+        if self.last_cleanup.elapsed() >= CLEANUP_INTERVAL {
+            self.last_cleanup = Instant::now();
+            let storage = self.storage.clone();
+            std::thread::spawn(move || {
+                let _ = storage.cleanup_expired();
+            });
+        }
+
+        if self.last_activity.elapsed() < ACTIVITY_REPAINT_WINDOW {
+            ctx.request_repaint_after(ACTIVITY_REPAINT_WINDOW);
+        }
     }
 }
 
@@ -3887,6 +3987,7 @@ fn action_bar_button(
     response
 }
 
+#[allow(clippy::too_many_arguments)]
 fn paint_icon_button(
     ui: &mut egui::Ui,
     rect: egui::Rect,
@@ -4123,45 +4224,8 @@ fn thumbnail_placeholder(ui: &mut egui::Ui, label: &str, theme: &MacosTokens) {
         });
 }
 
-fn row_preview_text(entry: &ClipboardEntry) -> String {
-    match entry.kind {
-        ClipboardKind::File | ClipboardKind::Video => file_preview_text(&entry.content),
-        ClipboardKind::Image if !entry.content.starts_with("data:image/") => {
-            file_preview_text(&entry.content)
-        }
-        _ => entry.preview.clone(),
-    }
-}
-
-fn file_preview_text(content: &str) -> String {
-    let paths = content
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>();
-    match paths.as_slice() {
-        [] => "空文件条目".to_string(),
-        [path] => {
-            let path = Path::new(path);
-            let name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or_else(|| path.to_str().unwrap_or("文件"));
-            let dir = path.parent().and_then(|value| value.to_str()).unwrap_or("");
-            if dir.is_empty() {
-                name.to_string()
-            } else {
-                format!("{name}\n{dir}")
-            }
-        }
-        many => {
-            let first = Path::new(many[0])
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or(many[0]);
-            format!("{} 个文件 · {first} …", many.len())
-        }
-    }
+fn row_preview_text(summary: &ClipboardEntrySummary) -> std::borrow::Cow<'_, str> {
+    std::borrow::Cow::Borrowed(&summary.preview)
 }
 
 fn fit_texture_size(size: egui::Vec2, max: egui::Vec2) -> egui::Vec2 {
@@ -4242,33 +4306,77 @@ fn detect_system_theme() -> MacosTokens {
     if let Ok(output) = std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "color-scheme"])
         .output()
+        && let Ok(text) = String::from_utf8(output.stdout)
     {
-        if let Ok(text) = String::from_utf8(output.stdout) {
-            let lower = text.to_ascii_lowercase();
-            if lower.contains("prefer-light") {
-                return MacosTokens::light();
-            }
-            if lower.contains("prefer-dark") {
-                return MacosTokens::dark();
-            }
+        let lower = text.to_ascii_lowercase();
+        if lower.contains("prefer-light") {
+            return MacosTokens::light();
+        }
+        if lower.contains("prefer-dark") {
+            return MacosTokens::dark();
         }
     }
     // Try GTK theme name
     if let Ok(output) = std::process::Command::new("gsettings")
         .args(["get", "org.gnome.desktop.interface", "gtk-theme"])
         .output()
+        && let Ok(text) = String::from_utf8(output.stdout)
     {
-        if let Ok(text) = String::from_utf8(output.stdout) {
-            let lower = text.to_ascii_lowercase();
-            if lower.contains("dark") {
-                return MacosTokens::dark();
-            }
-            // Non-dark GTK theme suggests light mode
-            if !lower.is_empty() && !lower.contains("default") {
-                return MacosTokens::light();
-            }
+        let lower = text.to_ascii_lowercase();
+        if lower.contains("dark") {
+            return MacosTokens::dark();
+        }
+        // Non-dark GTK theme suggests light mode
+        if !lower.is_empty() && !lower.contains("default") {
+            return MacosTokens::light();
         }
     }
     // Default to dark
     MacosTokens::dark()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClipboardEntry, FullEntryCache};
+
+    fn make_entry(id: i64, content: &str) -> ClipboardEntry {
+        let mut entry = ClipboardEntry::captured_text(content.to_string(), "test".to_string())
+            .expect("valid entry");
+        entry.id = id;
+        entry
+    }
+
+    #[test]
+    fn full_entry_cache_evicts_least_recently_used() {
+        let mut cache = FullEntryCache::new(2);
+        cache.insert(1, make_entry(1, "first"));
+        cache.insert(2, make_entry(2, "second"));
+
+        assert!(cache.get(1).is_some(), "id 1 should be cached");
+        assert!(cache.get(2).is_some(), "id 2 should be cached");
+
+        cache.insert(3, make_entry(3, "third"));
+
+        assert!(cache.get(1).is_none(), "id 1 should be evicted (LRU)");
+        assert!(cache.get(2).is_some(), "id 2 should still be cached");
+        assert!(cache.get(3).is_some(), "id 3 should be cached");
+    }
+
+    #[test]
+    fn full_entry_cache_invalidate_removes_entry() {
+        let mut cache = FullEntryCache::new(4);
+        cache.insert(7, make_entry(7, "keep me"));
+        cache.invalidate(7);
+        assert!(cache.get(7).is_none());
+    }
+
+    #[test]
+    fn full_entry_cache_clear_drops_all_entries() {
+        let mut cache = FullEntryCache::new(4);
+        cache.insert(1, make_entry(1, "a"));
+        cache.insert(2, make_entry(2, "b"));
+        cache.clear();
+        assert!(cache.get(1).is_none());
+        assert!(cache.get(2).is_none());
+    }
 }
