@@ -202,9 +202,8 @@ fn set_file_list(content: &str) -> Result<(), String> {
         return Err("文件剪贴板内容为空".to_string());
     }
     #[cfg(target_os = "linux")]
-    if set_file_list_with_xclip(&paths).is_ok() {
-        return Ok(());
-    }
+    let _ = set_file_list_with_xclip(&paths);
+
     let mut clipboard = Clipboard::new().map_err(|err| format!("初始化剪贴板失败: {err}"))?;
     clipboard
         .set()
