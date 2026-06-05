@@ -2,6 +2,7 @@ mod app;
 mod clipboard;
 mod model;
 mod platform;
+mod sound;
 mod storage;
 mod ui;
 
@@ -20,6 +21,7 @@ const LEGACY_DEV_MODE_ENV: &str = "MYCLIPBOARD_DEV";
 
 fn main() -> anyhow::Result<()> {
     let dev_mode = dev_mode_enabled();
+    let minimized = minimized_start_enabled();
     let storage = Storage::open(resolve_db_path()).context("打开剪贴板数据库失败")?;
     storage.cleanup_expired().context("清理过期历史失败")?;
 
@@ -30,7 +32,8 @@ fn main() -> anyhow::Result<()> {
         .with_position(initial_window_position())
         .with_transparent(true)
         .with_decorations(false)
-        .with_resizable(true);
+        .with_resizable(true)
+        .with_visible(!minimized);
     if let Some(icon) = load_window_icon() {
         viewport = viewport.with_icon(icon);
     }
@@ -43,9 +46,17 @@ fn main() -> anyhow::Result<()> {
     eframe::run_native(
         APP_ID,
         options,
-        Box::new(move |cc| Ok(Box::new(ClipboardApp::new(cc, storage, dev_mode)))),
+        Box::new(move |cc| {
+            Ok(Box::new(ClipboardApp::new(
+                cc, storage, dev_mode, !minimized,
+            )))
+        }),
     )
     .map_err(|err| anyhow::anyhow!(err.to_string()))
+}
+
+fn minimized_start_enabled() -> bool {
+    std::env::args().skip(1).any(|arg| arg == "--minimized")
 }
 
 fn initial_window_position() -> egui::Pos2 {

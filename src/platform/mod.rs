@@ -29,6 +29,14 @@ pub struct HotkeyConfig {
     pub search_hotkey: String,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct KeyboardModifiers {
+    pub ctrl: bool,
+    pub shift: bool,
+    pub alt: bool,
+    pub super_key: bool,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PasteMethod {
     Auto,
@@ -68,18 +76,21 @@ pub struct HotkeyUpdateHandle {
     sender: crossbeam_channel::Sender<HotkeyConfig>,
 }
 
-#[derive(Clone)]
 pub struct TrayHandle {
-    stop_sender: crossbeam_channel::Sender<()>,
+    stop: Option<Box<dyn FnOnce() + Send>>,
 }
 
 impl TrayHandle {
-    pub fn new(stop_sender: crossbeam_channel::Sender<()>) -> Self {
-        Self { stop_sender }
+    pub fn new(stop: impl FnOnce() + Send + 'static) -> Self {
+        Self {
+            stop: Some(Box::new(stop)),
+        }
     }
 
-    pub fn stop(&self) {
-        let _ = self.stop_sender.send(());
+    pub fn stop(mut self) {
+        if let Some(stop) = self.stop.take() {
+            stop();
+        }
     }
 }
 
@@ -96,17 +107,41 @@ impl HotkeyUpdateHandle {
 }
 
 #[cfg(target_os = "linux")]
+pub use linux::current_keyboard_modifiers;
+#[cfg(target_os = "linux")]
+pub use linux::validate_hotkey;
+#[cfg(target_os = "linux")]
 pub use linux::{
     active_app_name, discover_apps_for_mime, platform_note, simulate_paste, start_hotkey_listener,
 };
 #[cfg(target_os = "linux")]
+pub use linux::{autostart_enabled, set_autostart};
+#[cfg(target_os = "linux")]
 pub use linux::{mouse_position, screen_geometry, start_tray};
+#[cfg(target_os = "windows")]
+pub use windows::current_keyboard_modifiers;
+#[cfg(target_os = "windows")]
+pub use windows::validate_hotkey;
 #[cfg(target_os = "windows")]
 pub use windows::{
     active_app_name, discover_apps_for_mime, platform_note, simulate_paste, start_hotkey_listener,
 };
 #[cfg(target_os = "windows")]
+pub use windows::{autostart_enabled, set_autostart};
+#[cfg(target_os = "windows")]
 pub use windows::{mouse_position, screen_geometry, start_tray};
+
+#[cfg(target_os = "linux")]
+#[allow(dead_code)]
+pub fn capabilities() -> PlatformCapabilities {
+    linux::capabilities()
+}
+
+#[cfg(target_os = "windows")]
+#[allow(dead_code)]
+pub fn capabilities() -> PlatformCapabilities {
+    windows::capabilities()
+}
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn active_app_name() -> String {
@@ -138,6 +173,26 @@ pub fn start_hotkey_listener(
 ) -> HotkeyUpdateHandle {
     let (sender, _receiver) = crossbeam_channel::unbounded();
     HotkeyUpdateHandle::new(sender)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub fn current_keyboard_modifiers() -> KeyboardModifiers {
+    KeyboardModifiers::default()
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub fn validate_hotkey(_combo: &str) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub fn autostart_enabled() -> Result<bool, String> {
+    Ok(false)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+pub fn set_autostart(_enabled: bool) -> Result<(), String> {
+    Err("当前平台暂不支持开机启动".to_string())
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]

@@ -1,11 +1,12 @@
 use crate::clipboard::ClipboardEvent;
 use crate::platform::{
-    AppChoice, HotkeyAction, HotkeyConfig, HotkeyUpdateHandle, PasteMethod, PlatformCapabilities,
-    ScreenGeometry, TrayHandle,
+    AppChoice, HotkeyAction, HotkeyConfig, HotkeyUpdateHandle, KeyboardModifiers, PasteMethod,
+    PlatformCapabilities, ScreenGeometry, TrayHandle,
 };
 use crossbeam_channel::Sender;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
+use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -119,6 +120,102 @@ pub fn start_hotkey_listener(
     HotkeyUpdateHandle::new(update_sender)
 }
 
+pub fn current_keyboard_modifiers() -> KeyboardModifiers {
+    read_current_keyboard_modifiers().unwrap_or_default()
+}
+
+pub fn validate_hotkey(combo: &str) -> Result<(), String> {
+    let (conn, _) = x11rb::connect(None).map_err(|err| err.to_string())?;
+    parse_hotkey(&conn, combo, HotkeyAction::ToggleWindow).map(|_| ())
+}
+
+pub fn autostart_enabled() -> Result<bool, String> {
+    Ok(autostart_desktop_path()?.exists())
+}
+
+pub fn set_autostart(enabled: bool) -> Result<(), String> {
+    let path = autostart_desktop_path()?;
+    if enabled {
+        let parent = path
+            .parent()
+            .ok_or_else(|| "无法定位 autostart 目录".to_string())?;
+        fs::create_dir_all(parent).map_err(|err| format!("创建开机启动目录失败: {err}"))?;
+        let exe = std::env::current_exe().map_err(|err| format!("读取程序路径失败: {err}"))?;
+        let exec = desktop_exec_arg(&exe)?;
+        let desktop = format!(
+            "[Desktop Entry]\nType=Application\nName=tiez-slim\nComment=Native clipboard manager\nExec={exec}\nHidden=false\nNoDisplay=false\nX-GNOME-Autostart-enabled=true\nStartupNotify=false\nStartupWMClass=tiez-slim-linux\n",
+        );
+        fs::write(&path, desktop).map_err(|err| format!("写入开机启动配置失败: {err}"))?;
+    } else if path.exists() {
+        fs::remove_file(&path).map_err(|err| format!("删除开机启动配置失败: {err}"))?;
+    }
+    Ok(())
+}
+
+fn autostart_desktop_path() -> Result<PathBuf, String> {
+    let config_dir = dirs::config_dir().ok_or_else(|| "无法定位 XDG 配置目录".to_string())?;
+    Ok(config_dir.join("autostart").join("tiez-slim-linux.desktop"))
+}
+
+fn desktop_exec_arg(path: &Path) -> Result<String, String> {
+    let value = path
+        .to_str()
+        .ok_or_else(|| "程序路径不是有效 UTF-8，无法写入开机启动配置".to_string())?;
+    if value.chars().any(char::is_control) {
+        return Err("程序路径包含控制字符，无法写入开机启动配置".to_string());
+    }
+    let mut escaped = String::with_capacity(value.len() + 2);
+    escaped.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' | '\\' | '`' | '$' => {
+                escaped.push('\\');
+                escaped.push(ch);
+            }
+            '%' => escaped.push_str("%%"),
+            _ => escaped.push(ch),
+        }
+    }
+    escaped.push('"');
+    Ok(escaped)
+}
+
+fn read_current_keyboard_modifiers() -> Option<KeyboardModifiers> {
+    let (conn, _) = x11rb::connect(None).ok()?;
+    let keymap = conn.query_keymap().ok()?.reply().ok()?.keys;
+    let mapping = conn.get_modifier_mapping().ok()?.reply().ok()?;
+    let per_modifier = mapping.keycodes_per_modifier() as usize;
+
+    Some(KeyboardModifiers {
+        shift: modifier_group_pressed(&keymap, &mapping.keycodes, per_modifier, 0),
+        ctrl: modifier_group_pressed(&keymap, &mapping.keycodes, per_modifier, 2),
+        alt: modifier_group_pressed(&keymap, &mapping.keycodes, per_modifier, 3),
+        super_key: modifier_group_pressed(&keymap, &mapping.keycodes, per_modifier, 6),
+    })
+}
+
+fn modifier_group_pressed(
+    keymap: &[u8; 32],
+    keycodes: &[Keycode],
+    per_modifier: usize,
+    group: usize,
+) -> bool {
+    let start = group.saturating_mul(per_modifier);
+    keycodes
+        .iter()
+        .skip(start)
+        .take(per_modifier)
+        .copied()
+        .filter(|keycode| *keycode != 0)
+        .any(|keycode| keycode_pressed(keymap, keycode))
+}
+
+fn keycode_pressed(keymap: &[u8; 32], keycode: Keycode) -> bool {
+    let index = (keycode / 8) as usize;
+    let mask = 1u8 << (keycode % 8);
+    keymap.get(index).is_some_and(|value| value & mask != 0)
+}
+
 pub fn start_tray(
     sender: Sender<ClipboardEvent>,
     ctx: egui::Context,
@@ -127,17 +224,14 @@ pub fn start_tray(
     if !enabled {
         return None;
     }
-    let (stop_sender, stop_receiver) = crossbeam_channel::bounded(1);
-    thread::Builder::new()
-        .name("status-notifier-tray".to_string())
-        .spawn(move || {
-            if let Err(err) = tray_loop(sender.clone(), ctx.clone(), stop_receiver) {
-                let _ = sender.send(ClipboardEvent::Status(format!("系统托盘不可用: {err}")));
-                ctx.request_repaint();
-            }
-        })
-        .expect("spawn status notifier tray");
-    Some(TrayHandle::new(stop_sender))
+    match start_status_notifier(sender.clone(), ctx.clone()) {
+        Ok(handle) => Some(TrayHandle::new(move || handle.shutdown().wait())),
+        Err(err) => {
+            let _ = sender.send(ClipboardEvent::Status(format!("系统托盘不可用: {err}")));
+            ctx.request_repaint();
+            None
+        }
+    }
 }
 
 pub fn screen_size() -> Option<(f32, f32)> {
@@ -695,7 +789,7 @@ fn key_to_keysym(key: &str) -> Option<u32> {
     let normalized = key.trim();
     if normalized.chars().count() == 1 {
         let ch = normalized.chars().next()?.to_ascii_lowercase();
-        if ch.is_ascii_alphanumeric() {
+        if ch.is_ascii_graphic() && ch != '+' {
             return Some(ch as u32);
         }
     }
@@ -715,6 +809,7 @@ fn key_to_keysym(key: &str) -> Option<u32> {
         "end" => Some(0xff57),
         "pageup" => Some(0xff55),
         "pagedown" => Some(0xff56),
+        "plus" => Some(0x002b),
         _ => parse_function_key(normalized),
     }
 }
@@ -775,87 +870,82 @@ fn keysym_to_keycode<C: Connection>(conn: &C, keysym: u32) -> Result<Option<Keyc
     Ok(None)
 }
 
-fn tray_loop(
+fn start_status_notifier(
     sender: Sender<ClipboardEvent>,
     ctx: egui::Context,
-    stop_receiver: crossbeam_channel::Receiver<()>,
-) -> Result<(), String> {
+) -> Result<ksni::blocking::Handle<TiezSlimLinuxTray>, String> {
     use ksni::blocking::TrayMethods;
-    use ksni::menu::StandardItem;
-    use ksni::{Category, Icon, MenuItem, Tray};
-
-    struct TiezSlimLinuxTray {
-        sender: Sender<ClipboardEvent>,
-        ctx: egui::Context,
-    }
-
-    impl Tray for TiezSlimLinuxTray {
-        fn id(&self) -> String {
-            "tiez-slim-linux".to_string()
-        }
-
-        fn title(&self) -> String {
-            "tiez-slim".to_string()
-        }
-
-        fn category(&self) -> Category {
-            Category::ApplicationStatus
-        }
-
-        fn icon_name(&self) -> String {
-            "tiez-slim-linux".to_string()
-        }
-
-        fn icon_pixmap(&self) -> Vec<Icon> {
-            vec![tray_icon_pixmap()]
-        }
-
-        fn activate(&mut self, _x: i32, _y: i32) {
-            let _ = self.sender.send(ClipboardEvent::ToggleWindow);
-            self.ctx.request_repaint();
-        }
-
-        fn menu(&self) -> Vec<MenuItem<Self>> {
-            vec![
-                StandardItem {
-                    label: "显示/隐藏".to_string(),
-                    activate: Box::new(|tray: &mut Self| {
-                        let _ = tray.sender.send(ClipboardEvent::ToggleWindow);
-                        tray.ctx.request_repaint();
-                    }),
-                    ..Default::default()
-                }
-                .into(),
-                StandardItem {
-                    label: "设置".to_string(),
-                    activate: Box::new(|tray: &mut Self| {
-                        let _ = tray.sender.send(ClipboardEvent::OpenSettings);
-                        tray.ctx.request_repaint();
-                    }),
-                    ..Default::default()
-                }
-                .into(),
-                MenuItem::Separator,
-                StandardItem {
-                    label: "退出".to_string(),
-                    activate: Box::new(|tray: &mut Self| {
-                        let _ = tray.sender.send(ClipboardEvent::Quit);
-                        tray.ctx.request_repaint();
-                    }),
-                    ..Default::default()
-                }
-                .into(),
-            ]
-        }
-    }
 
     let tray = TiezSlimLinuxTray { sender, ctx };
-    let _handle = tray
-        .assume_sni_available(true)
+    tray.assume_sni_available(true)
         .spawn()
-        .map_err(|err| err.to_string())?;
-    let _ = stop_receiver.recv();
-    Ok(())
+        .map_err(|err| err.to_string())
+}
+
+struct TiezSlimLinuxTray {
+    sender: Sender<ClipboardEvent>,
+    ctx: egui::Context,
+}
+
+impl ksni::Tray for TiezSlimLinuxTray {
+    fn id(&self) -> String {
+        "tiez-slim-linux".to_string()
+    }
+
+    fn title(&self) -> String {
+        "tiez-slim".to_string()
+    }
+
+    fn category(&self) -> ksni::Category {
+        ksni::Category::ApplicationStatus
+    }
+
+    fn icon_name(&self) -> String {
+        "tiez-slim-linux".to_string()
+    }
+
+    fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+        vec![tray_icon_pixmap()]
+    }
+
+    fn activate(&mut self, _x: i32, _y: i32) {
+        let _ = self.sender.send(ClipboardEvent::ToggleWindow);
+        self.ctx.request_repaint();
+    }
+
+    fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+        use ksni::menu::StandardItem;
+        vec![
+            StandardItem {
+                label: "显示/隐藏".to_string(),
+                activate: Box::new(|tray: &mut Self| {
+                    let _ = tray.sender.send(ClipboardEvent::ToggleWindow);
+                    tray.ctx.request_repaint();
+                }),
+                ..Default::default()
+            }
+            .into(),
+            StandardItem {
+                label: "设置".to_string(),
+                activate: Box::new(|tray: &mut Self| {
+                    let _ = tray.sender.send(ClipboardEvent::OpenSettings);
+                    tray.ctx.request_repaint();
+                }),
+                ..Default::default()
+            }
+            .into(),
+            ksni::MenuItem::Separator,
+            StandardItem {
+                label: "退出".to_string(),
+                activate: Box::new(|tray: &mut Self| {
+                    let _ = tray.sender.send(ClipboardEvent::Quit);
+                    tray.ctx.request_repaint();
+                }),
+                ..Default::default()
+            }
+            .into(),
+        ]
+    }
 }
 
 fn tray_icon_pixmap() -> ksni::Icon {

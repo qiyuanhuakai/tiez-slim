@@ -1,6 +1,7 @@
 use crate::clipboard::{self, ClipboardEvent};
 use crate::model::{ClipboardEntry, ClipboardEntrySummary, ClipboardKind};
 use crate::platform;
+use crate::sound::{self, SoundEffect};
 use crate::storage::Storage;
 use crate::ui::MacosTokens;
 use crate::ui::widgets::{macos_collapsible_group, macos_range_slider, macos_toggle};
@@ -8,7 +9,7 @@ use crossbeam_channel::{Receiver, Sender, bounded};
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -24,17 +25,47 @@ const DEFAULT_WINDOW_SIZE: egui::Vec2 = egui::vec2(380.0, 680.0);
 const MIN_NORMAL_WINDOW_SIZE: egui::Vec2 = egui::vec2(320.0, 400.0);
 const RESIZE_HIT_SIZE: f32 = 8.0;
 const CARD_ACTION_WIDTH: f32 = 92.0;
-const TOOLBAR_BUTTON_SIZE: f32 = 34.0;
+const TOOLBAR_BUTTON_SIZE: f32 = 32.0;
+const TOOLBAR_ICON_SIZE: f32 = 16.0;
+const TOOLBAR_BUTTON_RADIUS: f32 = 9.0;
+const TOOLBAR_ICON_STROKE_WIDTH: f32 = 2.0;
 const CARD_ACTION_BUTTON_SIZE: f32 = 24.0;
 const FULL_ENTRY_CACHE_CAP: usize = 64;
 const EVENT_CHANNEL_CAPACITY: usize = 100;
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 const ACTIVITY_REPAINT_WINDOW: Duration = Duration::from_millis(500);
+const AUTO_FONT_VALUE: &str = "";
+const AUTO_PRIMARY_FONT_LABEL: &str = "自动（CJK 优先）";
+const AUTO_FALLBACK_FONT_LABEL: &str = "自动（Unifont 优先）";
+const VENDORED_UNIFONT_LABEL: &str = "GNU Unifont（内置）";
+const UNIFONT_FAMILY_CANDIDATES: &[&str] = &[
+    "GNU Unifont",
+    "Unifont",
+    "Unifont Upper",
+    "Unifont CSUR",
+    "Noto Sans Symbols 2",
+    "Noto Sans Symbols",
+    "Noto Sans Math",
+];
 
 struct FullEntryCache {
     map: HashMap<i64, ClipboardEntry>,
     order: VecDeque<i64>,
     cap: usize,
+}
+
+#[derive(Clone, Debug)]
+struct FontSelection {
+    primary: String,
+    fallback: String,
+}
+
+#[derive(Clone, Debug)]
+struct LoadedFont {
+    name: String,
+    bytes: Vec<u8>,
+    index: u32,
+    monospaced: bool,
 }
 
 impl FullEntryCache {
@@ -106,6 +137,7 @@ struct PendingEdgeHide {
 enum AppPage {
     Clipboard,
     Emoji,
+    Symbol,
     Settings,
 }
 
@@ -203,6 +235,121 @@ const EMOJI_GROUPS: &[(&str, &[&str])] = &[
     ),
 ];
 
+const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
+    (
+        "常用",
+        &[
+            "•", "·", "…", "—", "–", "※", "§", "¶", "†", "‡", "©", "®", "™", "℠", "°", "′", "″",
+            "№", "✓", "✔", "✗", "✘", "✕", "✦", "✧", "★", "☆", "◇", "◆", "○", "●", "□", "■", "△",
+            "▲", "▽", "▼", "◎", "◉", "◌", "◍",
+        ],
+    ),
+    (
+        "箭头",
+        &[
+            "←", "↑", "→", "↓", "↔", "↕", "↖", "↗", "↘", "↙", "⇐", "⇑", "⇒", "⇓", "⇔", "⇧", "⇩",
+            "⇦", "⇨", "⇪", "⟵", "⟶", "⟷", "⟸", "⟹", "⟺", "⟻", "⟼", "⤴", "⤵", "↩", "↪", "↫", "↬",
+            "↭", "↯", "↱", "↲", "↳", "↴", "↵", "↶", "↷", "↻", "↺", "➜", "➝", "➞", "➟", "➠", "➡",
+            "➢", "➤", "➥", "➦", "➧", "➨", "➩", "➪", "➫", "➬", "➭", "➮", "➯", "➱", "➲", "➳", "➵",
+            "➸", "➺", "➻", "➼", "➽", "➾",
+        ],
+    ),
+    (
+        "数学",
+        &[
+            "±", "×", "÷", "≈", "≠", "≤", "≥", "∞", "∑", "∏", "√", "∫", "∂", "∆", "∇", "∈", "∉",
+            "∋", "∌", "∅", "∁", "∩", "∪", "⊂", "⊃", "⊄", "⊅", "⊆", "⊇", "⊕", "⊖", "⊗", "⊘", "⊙",
+            "⊚", "⊛", "⊜", "⊥", "⊢", "⊣", "⊤", "⊨", "⊩", "⊪", "⊫", "⊬", "⊭", "∀", "∃", "∄", "∴",
+            "∵", "∶", "∷", "∼", "∽", "≃", "≅", "≌", "≐", "≒", "≡", "≢", "≪", "≫", "⌈", "⌉", "⌊",
+            "⌋", "⟨", "⟩", "⟪", "⟫",
+        ],
+    ),
+    (
+        "货币",
+        &[
+            "¥", "$", "€", "£", "₩", "₹", "₽", "₺", "₫", "₴", "₿", "¢", "¤", "₠", "₡", "₢", "₣",
+            "₤", "₥", "₦", "₧", "₨", "₩", "₪", "₫", "€", "₭", "₮", "₯", "₰", "₱", "₲", "₳", "₵",
+            "₸", "₹",
+        ],
+    ),
+    (
+        "框线",
+        &[
+            "─", "━", "│", "┃", "┌", "┐", "└", "┘", "├", "┤", "┬", "┴", "┼", "╭", "╮", "╰", "╯",
+            "═", "║", "╔", "╗", "╚", "╝", "╬", "┏", "┓", "┗", "┛", "┣", "┫", "┳", "┻", "╋", "┄",
+            "┅", "┆", "┇", "┈", "┉", "┊", "┋", "╎", "╏", "╞", "╡", "╤", "╧", "╪", "╫", "╒", "╕",
+            "╘", "╛", "╓", "╖", "╙", "╜", "╟", "╢", "╥", "╨", "╫", "╬",
+        ],
+    ),
+    (
+        "希腊",
+        &[
+            "Α", "Β", "Γ", "Δ", "Ε", "Ζ", "Η", "Θ", "Ι", "Κ", "Λ", "Μ", "Ν", "Ξ", "Ο", "Π", "Ρ",
+            "Σ", "Τ", "Υ", "Φ", "Χ", "Ψ", "Ω", "α", "β", "γ", "δ", "ε", "ζ", "η", "θ", "ι", "κ",
+            "λ", "μ", "ν", "ξ", "ο", "π", "ρ", "σ", "ς", "τ", "υ", "φ", "χ", "ψ", "ω", "ϑ", "ϕ",
+            "ϖ",
+        ],
+    ),
+    (
+        "上标/下标",
+        &[
+            "⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹", "⁺", "⁻", "⁼", "⁽", "⁾", "ⁿ", "₀",
+            "₁", "₂", "₃", "₄", "₅", "₆", "₇", "₈", "₉", "₊", "₋", "₌", "₍", "₎", "ₐ", "ₑ", "ₒ",
+            "ₓ", "ₕ", "ₖ", "ₗ", "ₘ", "ₙ", "ₚ", "ₛ", "ₜ", "½", "⅓", "⅔", "¼", "¾", "⅕", "⅖", "⅗",
+            "⅘", "⅙", "⅚", "⅛", "⅜", "⅝", "⅞",
+        ],
+    ),
+    (
+        "技术",
+        &[
+            "⌘", "⌥", "⌃", "⇧", "⎋", "⌫", "⌦", "⏎", "⌤", "⌧", "⌨", "␣", "␡", "⏏", "⏭", "⏮", "⏯",
+            "⏵", "⏸", "⏹", "⏺", "⏱", "⏲", "⏰", "⌚", "⌛", "⎈", "⎇", "⎉", "⎊", "⎌", "⎍", "⎔", "⎗",
+            "⎘", "⎙", "⎚", "⌁", "⌂", "⌐", "⌑", "⌒", "⌓", "⌔", "⌕", "⌖", "⌗", "⌬",
+        ],
+    ),
+    (
+        "几何",
+        &[
+            "■", "□", "▢", "▣", "▤", "▥", "▦", "▧", "▨", "▩", "▪", "▫", "▬", "▭", "▮", "▯", "▰",
+            "▱", "▲", "△", "▴", "▵", "▶", "▷", "▸", "▹", "►", "▻", "▼", "▽", "▾", "▿", "◀", "◁",
+            "◂", "◃", "◆", "◇", "◈", "◉", "◌", "◍", "◎", "●", "○", "◐", "◑", "◒", "◓", "◔", "◕",
+            "◖", "◗", "◘", "◙", "◚", "◛", "◜", "◝", "◞", "◟", "◠", "◡",
+        ],
+    ),
+    (
+        "块元素",
+        &[
+            "▀", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▉", "▊", "▋", "▌", "▍", "▎", "▏", "▐",
+            "░", "▒", "▓", "▔", "▕", "▖", "▗", "▘", "▙", "▚", "▛", "▜", "▝", "▞", "▟",
+        ],
+    ),
+    (
+        "标点/括号",
+        &[
+            "。", "、", "「", "」", "『", "』", "《", "》", "〈", "〉", "〔", "〕", "【", "】",
+            "〖", "〗", "〘", "〙", "〚", "〛", "〝", "〞", "“", "”", "‘", "’", "‚", "„", "‹", "›",
+            "«", "»", "¿", "¡", "‽", "⁂", "⁇", "⁈", "⁉", "⸮", "﹁", "﹂", "﹃", "﹄", "﹏", "﹋",
+            "﹌",
+        ],
+    ),
+    (
+        "星标/装饰",
+        &[
+            "✁", "✂", "✃", "✄", "✆", "✇", "✈", "✉", "✌", "✍", "✎", "✏", "✐", "✑", "✒", "✓", "✔",
+            "✕", "✖", "✗", "✘", "✙", "✚", "✛", "✜", "✝", "✞", "✟", "✠", "✡", "✢", "✣", "✤", "✥",
+            "✦", "✧", "✨", "✩", "✪", "✫", "✬", "✭", "✮", "✯", "✰", "✱", "✲", "✳", "✴", "✵", "✶",
+            "✷", "✸", "✹", "✺", "✻", "✼", "✽", "✾", "✿", "❀", "❁", "❂", "❃",
+        ],
+    ),
+    (
+        "音乐/棋牌",
+        &[
+            "♩", "♪", "♫", "♬", "♭", "♮", "♯", "♔", "♕", "♖", "♗", "♘", "♙", "♚", "♛", "♜", "♝",
+            "♞", "♟", "♠", "♡", "♢", "♣", "♤", "♥", "♦", "♧", "♨", "♲", "♻", "♾",
+        ],
+    ),
+];
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 struct AppPreferences {
@@ -213,6 +360,8 @@ struct AppPreferences {
     kind_filter: Option<ClipboardKind>,
     tag_filter: Option<String>,
     emoji_panel_enabled: bool,
+    symbol_panel_enabled: bool,
+    autostart_enabled: bool,
     emoji_tab: EmojiTab,
     persistent: bool,
     deduplicate: bool,
@@ -225,6 +374,8 @@ struct AppPreferences {
     arrow_key_selection: bool,
     tag_manager_enabled: bool,
     sound_enabled: bool,
+    sound_volume: u8,
+    paste_sound_enabled: bool,
     privacy_protection: bool,
     main_hotkeys: String,
     sequential_hotkey: String,
@@ -253,6 +404,10 @@ struct AppPreferences {
     settings_panel_collapsed: Vec<bool>,
     #[serde(default = "default_color_mode")]
     color_mode: String,
+    #[serde(default)]
+    primary_font: String,
+    #[serde(default)]
+    fallback_font: String,
 }
 
 fn default_privacy_protection_kinds() -> Vec<String> {
@@ -287,6 +442,8 @@ impl Default for AppPreferences {
             kind_filter: None,
             tag_filter: None,
             emoji_panel_enabled: true,
+            symbol_panel_enabled: true,
+            autostart_enabled: false,
             emoji_tab: EmojiTab::Emoji,
             persistent: true,
             deduplicate: true,
@@ -299,6 +456,8 @@ impl Default for AppPreferences {
             arrow_key_selection: true,
             tag_manager_enabled: true,
             sound_enabled: false,
+            sound_volume: 70,
+            paste_sound_enabled: true,
             privacy_protection: true,
             privacy_protection_kinds: default_privacy_protection_kinds(),
             privacy_protection_custom_rules: String::new(),
@@ -321,6 +480,17 @@ impl Default for AppPreferences {
             surface_opacity: 50,
             window_level_applied: false,
             color_mode: default_color_mode(),
+            primary_font: String::new(),
+            fallback_font: String::new(),
+        }
+    }
+}
+
+impl AppPreferences {
+    fn font_selection(&self) -> FontSelection {
+        FontSelection {
+            primary: self.primary_font.clone(),
+            fallback: self.fallback_font.clone(),
         }
     }
 }
@@ -347,6 +517,8 @@ pub struct ClipboardApp {
     kind_filter: Option<ClipboardKind>,
     tag_filter: Option<String>,
     emoji_panel_enabled: bool,
+    symbol_panel_enabled: bool,
+    autostart_enabled: bool,
     emoji_tab: EmojiTab,
     emoji_favorites: Vec<String>,
     persistent: bool,
@@ -360,6 +532,8 @@ pub struct ClipboardApp {
     arrow_key_selection: bool,
     tag_manager_enabled: bool,
     sound_enabled: bool,
+    sound_volume: u8,
+    paste_sound_enabled: bool,
     privacy_protection: bool,
     privacy_protection_kinds: Vec<String>,
     privacy_protection_custom_rules: String,
@@ -392,6 +566,8 @@ pub struct ClipboardApp {
     image_textures: HashMap<i64, egui::TextureHandle>,
     hotkey_handle: platform::HotkeyUpdateHandle,
     tray_handle: Option<platform::TrayHandle>,
+    search_box_revealed: bool,
+    history_at_top: bool,
     window_level_applied: bool,
     window_visible: bool,
     edge_hidden: bool,
@@ -402,6 +578,7 @@ pub struct ClipboardApp {
     pending_edge_hide: Option<PendingEdgeHide>,
     last_edge_transition: Instant,
     pending_paste: Option<PendingPaste>,
+    suppress_copy_sound_until: Option<Instant>,
     saved_tags: Vec<String>,
     selected_saved_tag: Option<String>,
     tag_detail_color: String,
@@ -409,6 +586,11 @@ pub struct ClipboardApp {
     dev_mode: bool,
     show_dev_panel: bool,
     color_mode: String,
+    primary_font: String,
+    fallback_font: String,
+    font_choices: Vec<String>,
+    primary_font_search: String,
+    fallback_font_search: String,
     event_count: u64,
     saved_count: u64,
     error_count: u64,
@@ -420,13 +602,17 @@ pub struct ClipboardApp {
 }
 
 impl ClipboardApp {
-    pub fn new(cc: &eframe::CreationContext<'_>, storage: Storage, dev_mode: bool) -> Self {
+    pub fn new(
+        cc: &eframe::CreationContext<'_>,
+        storage: Storage,
+        dev_mode: bool,
+        initially_visible: bool,
+    ) -> Self {
         egui_extras::install_image_loaders(&cc.egui_ctx);
-        configure_fonts(&cc.egui_ctx);
-
+        let preferences = load_preferences(&storage);
+        configure_fonts(&cc.egui_ctx, &preferences.font_selection());
         let (sender, events) = bounded(EVENT_CHANNEL_CAPACITY);
         clipboard::start_watcher(sender.clone());
-        let preferences = load_preferences(&storage);
         let hotkey_handle = platform::start_hotkey_listener(
             sender.clone(),
             cc.egui_ctx.clone(),
@@ -446,6 +632,10 @@ impl ClipboardApp {
         let file_app_choices = platform::discover_apps_for_mime("application/octet-stream");
         let image_app_choices = platform::discover_apps_for_mime("image/png");
         let video_app_choices = platform::discover_apps_for_mime("video/mp4");
+        let font_choices = discover_system_font_names();
+
+        let autostart_enabled =
+            platform::autostart_enabled().unwrap_or(preferences.autostart_enabled);
 
         let mut app = Self {
             storage,
@@ -469,6 +659,8 @@ impl ClipboardApp {
             kind_filter: preferences.kind_filter,
             tag_filter: preferences.tag_filter,
             emoji_panel_enabled: preferences.emoji_panel_enabled,
+            symbol_panel_enabled: preferences.symbol_panel_enabled,
+            autostart_enabled,
             emoji_tab: preferences.emoji_tab,
             emoji_favorites,
             persistent: preferences.persistent,
@@ -482,6 +674,8 @@ impl ClipboardApp {
             arrow_key_selection: preferences.arrow_key_selection,
             tag_manager_enabled: preferences.tag_manager_enabled,
             sound_enabled: preferences.sound_enabled,
+            sound_volume: preferences.sound_volume,
+            paste_sound_enabled: preferences.paste_sound_enabled,
             privacy_protection: preferences.privacy_protection,
             privacy_protection_kinds: preferences.privacy_protection_kinds,
             privacy_protection_custom_rules: preferences.privacy_protection_custom_rules,
@@ -514,8 +708,10 @@ impl ClipboardApp {
             image_textures: HashMap::new(),
             hotkey_handle,
             tray_handle,
+            search_box_revealed: false,
+            history_at_top: true,
             window_level_applied: false,
-            window_visible: true,
+            window_visible: initially_visible,
             edge_hidden: false,
             edge_hide_armed: true,
             current_edge_dock: DockMode::Off,
@@ -524,6 +720,7 @@ impl ClipboardApp {
             pending_edge_hide: None,
             last_edge_transition: Instant::now(),
             pending_paste: None,
+            suppress_copy_sound_until: None,
             saved_tags,
             selected_saved_tag: None,
             tag_detail_color: "#4f46e5".to_string(),
@@ -531,6 +728,11 @@ impl ClipboardApp {
             dev_mode,
             show_dev_panel: false,
             color_mode: preferences.color_mode.clone(),
+            primary_font: preferences.primary_font.clone(),
+            fallback_font: preferences.fallback_font.clone(),
+            font_choices,
+            primary_font_search: String::new(),
+            fallback_font_search: String::new(),
             event_count: 0,
             saved_count: 0,
             error_count: 0,
@@ -658,6 +860,9 @@ impl ClipboardApp {
                                 Ok(_) => {
                                     self.saved_count += 1;
                                     self.status = "已按纯文本捕获富文本剪贴板".to_string();
+                                    if self.should_play_copy_sound() {
+                                        self.play_sound(SoundEffect::Copy);
+                                    }
                                     changed = true;
                                 }
                                 Err(err) => {
@@ -677,6 +882,9 @@ impl ClipboardApp {
                         Ok(_) => {
                             self.saved_count += 1;
                             self.status = format!("已捕获：{}", entry.preview);
+                            if self.should_play_copy_sound() {
+                                self.play_sound(SoundEffect::Copy);
+                            }
                             changed = true;
                         }
                         Err(err) => {
@@ -730,6 +938,7 @@ impl ClipboardApp {
                     due_at: Instant::now() + Duration::from_millis(120),
                     restore_pinned_window: self.window_pinned,
                 });
+                self.suppress_copy_sound_until = Some(Instant::now() + Duration::from_secs(2));
                 self.window_visible = false;
                 ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
                     egui::WindowLevel::Normal,
@@ -779,6 +988,9 @@ impl ClipboardApp {
                 if pending.restore_pinned_window {
                     self.restore_window_after_paste(ctx);
                 }
+                if self.paste_sound_enabled {
+                    self.play_sound(SoundEffect::Paste);
+                }
                 self.refresh_entries();
             }
             Err(err) => self.status = err,
@@ -822,9 +1034,27 @@ impl ClipboardApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
         self.current_page = AppPage::Clipboard;
+        self.search_box_revealed = true;
         self.focus_search = true;
         self.status = "已通过快捷键聚焦搜索".to_string();
         ctx.request_repaint();
+    }
+
+    fn play_sound(&self, effect: SoundEffect) {
+        if self.sound_enabled {
+            sound::play(effect, self.sound_volume);
+        }
+    }
+
+    fn should_play_copy_sound(&mut self) -> bool {
+        let Some(until) = self.suppress_copy_sound_until else {
+            return true;
+        };
+        if Instant::now() < until {
+            return false;
+        }
+        self.suppress_copy_sound_until = None;
+        true
     }
 
     fn open_settings_from_tray(&mut self, ctx: &egui::Context) {
@@ -1377,6 +1607,8 @@ impl ClipboardApp {
                 None
             },
             emoji_panel_enabled: self.emoji_panel_enabled,
+            symbol_panel_enabled: self.symbol_panel_enabled,
+            autostart_enabled: self.autostart_enabled,
             emoji_tab: self.emoji_tab.clone(),
             persistent: self.persistent,
             deduplicate: self.deduplicate,
@@ -1389,6 +1621,8 @@ impl ClipboardApp {
             arrow_key_selection: self.arrow_key_selection,
             tag_manager_enabled: self.tag_manager_enabled,
             sound_enabled: self.sound_enabled,
+            sound_volume: self.sound_volume,
+            paste_sound_enabled: self.paste_sound_enabled,
             privacy_protection: self.privacy_protection,
             privacy_protection_kinds: self.privacy_protection_kinds.clone(),
             privacy_protection_custom_rules: self.privacy_protection_custom_rules.clone(),
@@ -1411,7 +1645,34 @@ impl ClipboardApp {
             surface_opacity: self.surface_opacity,
             window_level_applied: false,
             color_mode: self.color_mode.clone(),
+            primary_font: self.primary_font.clone(),
+            fallback_font: self.fallback_font.clone(),
         }
+    }
+
+    fn font_selection(&self) -> FontSelection {
+        FontSelection {
+            primary: self.primary_font.clone(),
+            fallback: self.fallback_font.clone(),
+        }
+    }
+
+    fn font_load_warning(&self) -> Option<String> {
+        if !self.primary_font.trim().is_empty()
+            && load_system_font_family(&self.primary_font).is_none()
+        {
+            return Some(format!(
+                "主要字体未找到：{}，已回退到自动字体",
+                self.primary_font
+            ));
+        }
+        if !self.fallback_font.trim().is_empty()
+            && self.fallback_font != VENDORED_UNIFONT_LABEL
+            && load_system_font_family(&self.fallback_font).is_none()
+        {
+            return Some(format!("备用字体未找到：{}", self.fallback_font));
+        }
+        None
     }
 
     fn send_window_level(&self, ctx: &egui::Context) {
@@ -1454,6 +1715,9 @@ impl ClipboardApp {
             None
         };
         self.emoji_panel_enabled = preferences.emoji_panel_enabled;
+        self.symbol_panel_enabled = preferences.symbol_panel_enabled;
+        self.autostart_enabled =
+            platform::autostart_enabled().unwrap_or(preferences.autostart_enabled);
         self.emoji_tab = preferences.emoji_tab;
         self.persistent = preferences.persistent;
         self.deduplicate = preferences.deduplicate;
@@ -1466,6 +1730,8 @@ impl ClipboardApp {
         self.arrow_key_selection = preferences.arrow_key_selection;
         self.tag_manager_enabled = preferences.tag_manager_enabled;
         self.sound_enabled = preferences.sound_enabled;
+        self.sound_volume = preferences.sound_volume;
+        self.paste_sound_enabled = preferences.paste_sound_enabled;
         self.privacy_protection = preferences.privacy_protection;
         self.privacy_protection_kinds = preferences.privacy_protection_kinds;
         self.privacy_protection_custom_rules = preferences.privacy_protection_custom_rules;
@@ -1486,8 +1752,11 @@ impl ClipboardApp {
         self.default_video_app = preferences.default_video_app;
         self.paste_method = preferences.paste_method;
         self.color_mode = preferences.color_mode;
+        self.primary_font = preferences.primary_font;
+        self.fallback_font = preferences.fallback_font;
         self.surface_opacity = preferences.surface_opacity;
         self.theme = resolve_theme(&self.color_mode);
+        configure_fonts(ctx, &self.font_selection());
         self.configure_style(ctx);
         self.apply_window_level(ctx);
         self.update_hotkeys();
@@ -1533,6 +1802,7 @@ impl ClipboardApp {
         });
         if focus_search {
             self.current_page = AppPage::Clipboard;
+            self.search_box_revealed = true;
             self.focus_search = true;
         }
         if ctx.wants_keyboard_input() {
@@ -1564,11 +1834,32 @@ impl ClipboardApp {
         }
     }
 
+    fn handle_search_box_scroll(&mut self, ctx: &egui::Context) {
+        if self.current_page != AppPage::Clipboard || self.show_search_box {
+            return;
+        }
+        let scroll_y = ctx.input(|input| input.raw_scroll_delta.y + input.smooth_scroll_delta.y);
+        if scroll_y > 8.0 && self.history_at_top {
+            self.search_box_revealed = true;
+            self.status = "已临时显示搜索框".to_string();
+        } else if scroll_y < -8.0
+            && self.search_box_revealed
+            && self.query.is_empty()
+            && self.kind_filter.is_none()
+            && (!self.tag_manager_enabled || self.tag_filter.is_none())
+        {
+            self.search_box_revealed = false;
+            self.focus_search = false;
+            self.status = "已隐藏搜索框".to_string();
+        }
+    }
+
     fn capture_hotkey_recording(&mut self, ctx: &egui::Context) -> bool {
         let Some(target) = self.recording_hotkey else {
             return false;
         };
         let recorded = ctx.input(|input| {
+            let input_modifiers = merge_keyboard_modifiers(input.modifiers);
             input.events.iter().find_map(|event| match event {
                 egui::Event::Key {
                     key,
@@ -1576,7 +1867,8 @@ impl ClipboardApp {
                     repeat: false,
                     modifiers,
                     ..
-                } => hotkey_string_from_key(*key, *modifiers),
+                } => hotkey_string_from_key(*key, merge_keyboard_modifiers(*modifiers)),
+                egui::Event::Text(text) => hotkey_string_from_text(text, input_modifiers),
                 egui::Event::PointerButton {
                     button: egui::PointerButton::Middle,
                     pressed: true,
@@ -1599,6 +1891,10 @@ impl ClipboardApp {
     }
 
     fn apply_recorded_hotkey(&mut self, target: HotkeyTarget, recorded: String) {
+        if let Err(err) = platform::validate_hotkey(&recorded) {
+            self.status = format!("快捷键不可用，未保存：{recorded}（{err}）");
+            return;
+        }
         match target {
             HotkeyTarget::Main => {
                 let mut hotkeys = self
@@ -1775,6 +2071,7 @@ impl ClipboardApp {
                         match self.current_page {
                             AppPage::Clipboard => APP_DISPLAY_NAME,
                             AppPage::Emoji => "表情包",
+                            AppPage::Symbol => "符号",
                             AppPage::Settings => "设置",
                         },
                         &self.theme,
@@ -1787,7 +2084,13 @@ impl ClipboardApp {
 
                     let mut button_count = 2.0; // 关闭 + 置顶
                     if self.current_page == AppPage::Clipboard {
-                        button_count += if self.emoji_panel_enabled { 3.0 } else { 2.0 };
+                        button_count += 2.0;
+                        if self.emoji_panel_enabled {
+                            button_count += 1.0;
+                        }
+                        if self.symbol_panel_enabled {
+                            button_count += 1.0;
+                        }
                     }
                     if self.dev_mode {
                         button_count += 1.0;
@@ -1819,9 +2122,14 @@ impl ClipboardApp {
                                 self.current_page = AppPage::Settings;
                             }
                             if self.emoji_panel_enabled
-                                && toolbar_button(ui, "☺", "表情包", &self.theme).clicked()
+                                && toolbar_button(ui, "😀", "表情包", &self.theme).clicked()
                             {
                                 self.current_page = AppPage::Emoji;
+                            }
+                            if self.symbol_panel_enabled
+                                && toolbar_button(ui, "∑", "符号", &self.theme).clicked()
+                            {
+                                self.current_page = AppPage::Symbol;
                             }
                             if toolbar_button(ui, "⌫", "清空非置顶", &self.theme).clicked() {
                                 match self.storage.clear_unpinned() {
@@ -1833,7 +2141,7 @@ impl ClipboardApp {
                                 }
                             }
                         }
-                        let pin_label = if self.window_pinned { "⚐" } else { "⚑" };
+                        let pin_label = if self.window_pinned { "📍" } else { "📌" };
                         if toolbar_button(ui, pin_label, "窗口置顶/取消置顶", &self.theme).clicked()
                         {
                             self.window_pinned = !self.window_pinned;
@@ -1848,7 +2156,14 @@ impl ClipboardApp {
                     });
                 });
 
-                if self.current_page == AppPage::Clipboard && self.show_search_box {
+                let show_search_tools = self.current_page == AppPage::Clipboard
+                    && (self.show_search_box
+                        || self.search_box_revealed
+                        || self.focus_search
+                        || !self.query.is_empty()
+                        || self.kind_filter.is_some()
+                        || (self.tag_manager_enabled && self.tag_filter.is_some()));
+                if show_search_tools {
                     ui.add_space(8.0);
                     let available_width = ui.available_width().max(0.0);
                     let content_width = available_width.clamp(120.0, HISTORY_MAX_WIDTH);
@@ -1950,6 +2265,7 @@ impl ClipboardApp {
 
     fn draw_history(&mut self, ui: &mut egui::Ui) {
         if self.entries.is_empty() {
+            self.history_at_top = true;
             let filtered = !self.query.trim().is_empty()
                 || self.kind_filter.is_some()
                 || (self.tag_manager_enabled && self.tag_filter.is_some());
@@ -1972,7 +2288,7 @@ impl ClipboardApp {
             return;
         }
 
-        egui::ScrollArea::vertical()
+        let output = egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let available_width = ui.available_width().max(0.0);
@@ -1984,26 +2300,30 @@ impl ClipboardApp {
                 // mem::take swaps in an empty Vec and is just a header move,
                 // no element clones happen.
                 let entries = std::mem::take(&mut self.entries);
+                let mut entries_changed = false;
                 for entry in &entries {
                     ui.horizontal(|ui| {
                         ui.add_space(left_padding);
                         ui.vertical(|ui| {
                             ui.set_width(content_width);
                             ui.set_max_width(content_width);
-                            self.history_card(ui, entry);
+                            entries_changed |= self.history_card(ui, entry);
                         });
                     });
                     ui.add_space(if self.compact_rows { 2.0 } else { 5.0 });
                 }
-                self.entries = entries;
+                if !entries_changed {
+                    self.entries = entries;
+                }
                 if self.show_detail_panel {
                     ui.add_space(8.0);
                     self.draw_detail(ui);
                 }
             });
+        self.history_at_top = output.state.offset.y <= 1.0;
     }
 
-    fn history_card(&mut self, ui: &mut egui::Ui, entry: &ClipboardEntrySummary) {
+    fn history_card(&mut self, ui: &mut egui::Ui, entry: &ClipboardEntrySummary) -> bool {
         let card_width = ui.available_width().min(HISTORY_MAX_WIDTH);
         let selected = self.selected_id == Some(entry.id);
         let sensitive = self.privacy_protection && entry.is_sensitive();
@@ -2038,60 +2358,85 @@ impl ClipboardApp {
                         self.draw_image_thumbnail(ui, entry);
                     }
                     ui.vertical(|ui| {
-                        ui.horizontal(|ui| {
-                            let row_width = ui.available_width().max(0.0);
-                            let action_width = CARD_ACTION_WIDTH.min(row_width);
-                            let meta_width = (row_width - action_width).max(0.0);
-                            ui.allocate_ui_with_layout(
-                                egui::vec2(meta_width, 24.0),
-                                egui::Layout::left_to_right(egui::Align::Center),
-                                |ui| {
-                                    ui.label(
-                                        egui::RichText::new(entry.formatted_time())
-                                            .size(10.0)
-                                            .strong()
-                                            .color(self.theme.muted),
-                                    );
-                                    kind_badge(ui, entry.kind.label(), &self.theme);
-                                    if entry.is_pinned {
-                                        ui.label(
-                                            egui::RichText::new("⚑")
-                                                .size(12.0)
-                                                .color(self.theme.accent),
-                                        );
-                                    }
-                                    if sensitive {
-                                        sensitive_badge(ui, &self.theme);
-                                    }
-                                },
-                            );
-                            ui.add_space(action_width);
-                        });
                         let text = if sensitive && !self.show_sensitive {
                             masked_preview(&entry.preview)
                         } else {
                             row_preview_text(entry).into_owned()
                         };
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(text)
-                                    .size(if self.compact_rows { 12.5 } else { 13.5 })
-                                    .monospace()
-                                    .color(if sensitive && !self.show_sensitive {
-                                        self.theme.muted
-                                    } else {
-                                        self.theme.fg
-                                    }),
-                            )
-                            .truncate(),
-                        );
-                        if self.tag_manager_enabled && !entry.tags.is_empty() {
+                        if self.compact_rows {
                             ui.horizontal_wrapped(|ui| {
-                                ui.spacing_mut().item_spacing.y = 2.0;
-                                for tag in &entry.tags {
-                                    tag_chip(ui, tag, &self.theme);
+                                ui.spacing_mut().item_spacing = egui::vec2(5.0, 2.0);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(text).size(12.5).monospace().color(
+                                            if sensitive && !self.show_sensitive {
+                                                self.theme.muted
+                                            } else {
+                                                self.theme.fg
+                                            },
+                                        ),
+                                    )
+                                    .truncate(),
+                                );
+                                if self.tag_manager_enabled {
+                                    for tag in &entry.tags {
+                                        tag_chip(ui, tag, &self.theme);
+                                    }
                                 }
                             });
+                        } else {
+                            ui.horizontal(|ui| {
+                                let row_width = ui.available_width().max(0.0);
+                                let action_width = CARD_ACTION_WIDTH.min(row_width);
+                                let meta_width = (row_width - action_width).max(0.0);
+                                ui.allocate_ui_with_layout(
+                                    egui::vec2(meta_width, 24.0),
+                                    egui::Layout::left_to_right(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new(entry.formatted_time())
+                                                .size(10.0)
+                                                .strong()
+                                                .color(self.theme.muted),
+                                        );
+                                        if !entry.source_app.trim().is_empty() {
+                                            source_app_badge(ui, &entry.source_app, &self.theme);
+                                        }
+                                        kind_badge(ui, entry.kind.label(), &self.theme);
+                                        if entry.is_pinned {
+                                            ui.label(
+                                                egui::RichText::new("⚑")
+                                                    .size(12.0)
+                                                    .color(self.theme.accent),
+                                            );
+                                        }
+                                        if sensitive {
+                                            sensitive_badge(ui, &self.theme);
+                                        }
+                                    },
+                                );
+                                ui.add_space(action_width);
+                            });
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(text).size(13.5).monospace().color(
+                                        if sensitive && !self.show_sensitive {
+                                            self.theme.muted
+                                        } else {
+                                            self.theme.fg
+                                        },
+                                    ),
+                                )
+                                .truncate(),
+                            );
+                            if self.tag_manager_enabled && !entry.tags.is_empty() {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 2.0;
+                                    for tag in &entry.tags {
+                                        tag_chip(ui, tag, &self.theme);
+                                    }
+                                });
+                            }
                         }
                     });
                 });
@@ -2113,6 +2458,10 @@ impl ClipboardApp {
                 egui::Rounding::same(13.0),
                 egui::Stroke::new(1.0, scale_alpha(self.theme.shadow_card, 0.75)),
             );
+        }
+
+        if card_hovered && matches!(entry.kind, ClipboardKind::RichText) && !sensitive {
+            self.show_rich_hover_preview(ui.ctx(), entry, response.rect);
         }
 
         if show_actions {
@@ -2184,7 +2533,10 @@ impl ClipboardApp {
         if let Some(action) = pending_action {
             match action {
                 CardAction::TogglePin => match self.storage.toggle_pin(entry_id) {
-                    Ok(()) => self.refresh_entries(),
+                    Ok(()) => {
+                        self.refresh_entries();
+                        return true;
+                    }
                     Err(err) => self.status = format!("置顶失败: {err}"),
                 },
                 CardAction::Open => {
@@ -2200,12 +2552,13 @@ impl ClipboardApp {
                                 self.selected_id = None;
                             }
                             self.refresh_entries();
+                            return true;
                         }
                         Err(err) => self.status = format!("删除失败: {err}"),
                     }
                 }
             }
-            return;
+            return false;
         }
 
         if response.clicked() {
@@ -2216,6 +2569,7 @@ impl ClipboardApp {
             self.select_entry(entry.id);
             self.paste_entry(ui.ctx(), entry, true);
         }
+        false
     }
 
     fn draw_image_thumbnail(&mut self, ui: &mut egui::Ui, summary: &ClipboardEntrySummary) {
@@ -2234,6 +2588,63 @@ impl ClipboardApp {
         } else {
             thumbnail_placeholder(ui, "image", &self.theme);
         }
+    }
+
+    fn show_rich_hover_preview(
+        &self,
+        ctx: &egui::Context,
+        summary: &ClipboardEntrySummary,
+        anchor: egui::Rect,
+    ) {
+        let Some(entry) = self.get_full_entry(summary.id) else {
+            return;
+        };
+        let Some(html) = entry.html_content.as_deref() else {
+            return;
+        };
+        let preview = rich_html_hover_text(html, &entry.content);
+        if preview.trim().is_empty() {
+            return;
+        }
+        let screen = ctx.input(|input| input.screen_rect());
+        let width = 320.0_f32.min(screen.width().max(244.0) - 24.0).max(220.0);
+        let mut pos = anchor.right_top() + egui::vec2(10.0, 2.0);
+        if pos.x + width + 12.0 > screen.right() {
+            pos.x = (anchor.left() - width - 10.0).max(screen.left() + 12.0);
+        }
+        let min_y = screen.top() + 12.0;
+        let max_y = (screen.bottom() - 180.0).max(min_y);
+        pos.y = pos.y.clamp(min_y, max_y);
+
+        egui::Area::new(egui::Id::new(("rich_hover_preview", summary.id)))
+            .order(egui::Order::Tooltip)
+            .fixed_pos(pos)
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::none()
+                    .fill(self.theme.card)
+                    .stroke(egui::Stroke::new(1.0, self.theme.border))
+                    .rounding(egui::Rounding::same(12.0))
+                    .inner_margin(egui::Margin::same(12.0))
+                    .show(ui, |ui| {
+                        ui.set_width(width);
+                        ui.label(
+                            egui::RichText::new("富文本预览")
+                                .size(12.0)
+                                .strong()
+                                .color(self.theme.accent),
+                        );
+                        ui.add_space(6.0);
+                        egui::ScrollArea::vertical()
+                            .max_height(220.0)
+                            .auto_shrink([false, true])
+                            .show(ui, |ui| {
+                                ui.label(
+                                    egui::RichText::new(preview).size(13.0).color(self.theme.fg),
+                                );
+                            });
+                    });
+            });
     }
 
     fn image_texture(
@@ -2437,7 +2848,9 @@ impl ClipboardApp {
                         for favorite in favorites {
                             if ui.button(&favorite).clicked() {
                                 match clipboard::set_text(&favorite) {
-                                    Ok(()) => self.status = "已复制收藏表情路径".to_string(),
+                                    Ok(()) => {
+                                        self.status = "已复制收藏表情路径".to_string();
+                                    }
                                     Err(err) => self.status = err,
                                 }
                             }
@@ -2446,6 +2859,32 @@ impl ClipboardApp {
                 }
             }
         }
+    }
+
+    fn draw_symbol_page(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("点击即可复制不在键盘上的常用符号。").color(self.theme.muted));
+        ui.add_space(10.0);
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for (group, symbols) in SYMBOL_GROUPS {
+                    ui.label(egui::RichText::new(*group).size(14.0).strong());
+                    ui.separator();
+                    ui.horizontal_wrapped(|ui| {
+                        for symbol in *symbols {
+                            if symbol_button(ui, symbol, &self.theme).clicked() {
+                                match clipboard::set_text(symbol) {
+                                    Ok(()) => {
+                                        self.status = format!("已复制符号：{symbol}");
+                                    }
+                                    Err(err) => self.status = err,
+                                }
+                            }
+                        }
+                    });
+                    ui.add_space(14.0);
+                }
+            });
     }
 
     fn draw_dev_panel(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
@@ -2511,8 +2950,43 @@ impl ClipboardApp {
                     ui.label("启用表情包入口");
                     macos_toggle(ui, &mut self.emoji_panel_enabled, &self.theme)
                 }).inner.changed() {
+                    if !self.emoji_panel_enabled && self.current_page == AppPage::Emoji {
+                        self.current_page = AppPage::Clipboard;
+                    }
                     self.persist_preferences();
                 }
+                if ui.horizontal(|ui| {
+                    ui.label("启用符号入口");
+                    macos_toggle(ui, &mut self.symbol_panel_enabled, &self.theme)
+                }).inner.changed() {
+                    if !self.symbol_panel_enabled && self.current_page == AppPage::Symbol {
+                        self.current_page = AppPage::Clipboard;
+                    }
+                    self.persist_preferences();
+                }
+                if ui.horizontal(|ui| {
+                    ui.label("开机启动");
+                    macos_toggle(ui, &mut self.autostart_enabled, &self.theme)
+                }).inner.changed() {
+                    match platform::set_autostart(self.autostart_enabled) {
+                        Ok(()) => {
+                            self.status = if self.autostart_enabled {
+                                "已启用开机启动".to_string()
+                            } else {
+                                "已关闭开机启动".to_string()
+                            };
+                            self.persist_preferences();
+                        }
+                        Err(err) => {
+                            self.autostart_enabled = !self.autostart_enabled;
+                            self.status = format!("设置开机启动失败: {err}");
+                        }
+                    }
+                }
+                ui.label(
+                    egui::RichText::new("启用后会写入 XDG autostart，并以最小化方式启动。")
+                        .color(self.theme.muted),
+                );
                 if ui.horizontal(|ui| {
                     ui.label("启用标签管理能力");
                     macos_toggle(ui, &mut self.tag_manager_enabled, &self.theme)
@@ -2526,11 +3000,18 @@ impl ClipboardApp {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("显示搜索框");
+                    ui.label("始终显示搜索框");
                     macos_toggle(ui, &mut self.show_search_box, &self.theme)
                 }).inner.changed() {
+                    self.search_box_revealed = self.show_search_box;
                     self.persist_preferences();
                 }
+                ui.label(
+                    egui::RichText::new(
+                        "关闭后，在历史列表顶端继续向上滚动可临时唤出；无搜索/过滤时向下滚动会隐藏。",
+                    )
+                        .color(self.theme.muted),
+                );
                 if ui.horizontal(|ui| {
                     ui.label("简洁模式");
                     macos_toggle(ui, &mut self.compact_rows, &self.theme)
@@ -2565,12 +3046,33 @@ impl ClipboardApp {
                 {
                     self.persist_preferences();
                 }
-                ui.add_enabled_ui(false, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("音效（预留，未接入）");
-                        macos_toggle(ui, &mut self.sound_enabled, &self.theme);
-                    });
-                });
+                if ui.horizontal(|ui| {
+                    ui.label("音效");
+                    macos_toggle(ui, &mut self.sound_enabled, &self.theme)
+                }).inner.changed() {
+                    self.persist_preferences();
+                    if self.sound_enabled {
+                        self.play_sound(SoundEffect::Copy);
+                    }
+                }
+                if self.sound_enabled {
+                    let mut volume = self.sound_volume as f32;
+                    if ui.horizontal(|ui| {
+                        ui.label("音效音量");
+                        let changed = macos_range_slider(ui, &mut volume, 0.0..=100.0, &self.theme).changed();
+                        ui.label(egui::RichText::new(format!("{}%", volume.round() as u8)).color(self.theme.muted));
+                        changed
+                    }).inner {
+                        self.sound_volume = volume.round().clamp(0.0, 100.0) as u8;
+                        self.persist_preferences();
+                    }
+                    if ui.horizontal(|ui| {
+                        ui.label("粘贴音效");
+                        macos_toggle(ui, &mut self.paste_sound_enabled, &self.theme)
+                    }).inner.changed() {
+                        self.persist_preferences();
+                    }
+                }
             });
             if expanded == prev {
                 self.settings_panel_collapsed[0] = !expanded;
@@ -2706,6 +3208,44 @@ impl ClipboardApp {
                         }
                     }
                 });
+                ui.add_space(4.0);
+                ui.label("字体");
+                let mut font_changed = false;
+                font_changed |= font_combo_row(
+                    ui,
+                    "主要字体",
+                    &mut self.primary_font,
+                    &mut self.primary_font_search,
+                    &self.font_choices,
+                    AUTO_PRIMARY_FONT_LABEL,
+                    "搜索主要字体...",
+                );
+                font_changed |= font_combo_row(
+                    ui,
+                    "备用字体",
+                    &mut self.fallback_font,
+                    &mut self.fallback_font_search,
+                    &self.font_choices,
+                    AUTO_FALLBACK_FONT_LABEL,
+                    "搜索备用字体...",
+                );
+                ui.vertical(|ui| {
+                    if ui.button("重新扫描系统字体").clicked() {
+                        self.font_choices = discover_system_font_names();
+                        self.status = format!("已扫描 {} 个系统字体", self.font_choices.len());
+                    }
+                    ui.label(
+                        egui::RichText::new("备用字体会放在 fallback 链末尾；主要字体缺字时自动回退。")
+                            .color(self.theme.muted),
+                    );
+                });
+                if font_changed {
+                    configure_fonts(ctx, &self.font_selection());
+                    self.persist_preferences();
+                    if let Some(message) = self.font_load_warning() {
+                        self.status = message;
+                    }
+                }
                 ui.add_space(4.0);
                 if ui.horizontal(|ui| {
                     ui.label("显示敏感内容（Ctrl+H）");
@@ -3152,21 +3692,22 @@ impl ClipboardApp {
             }
         }
 
-            ui.add_space(14.0);
-            ui.horizontal_centered(|ui| {
-                if ui
-                    .add(egui::Button::new("问题反馈").rounding(egui::Rounding::same(10.0)))
-                    .clicked()
-                {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let button_gap = 10.0;
+                let feedback_width = 112.0;
+                let reset_width = 150.0;
+                let total_width = feedback_width + button_gap + reset_width;
+                ui.add_space(((ui.available_width() - total_width) * 0.5).max(0.0));
+
+                if settings_footer_button(ui, "问题反馈", &self.theme, feedback_width).clicked() {
                     match open::that(APP_REPO_URL) {
                         Ok(()) => self.status = "已调用系统默认浏览器".to_string(),
                         Err(err) => self.status = format!("打开浏览器失败: {err}"),
                     }
                 }
-                if ui
-                    .add(egui::Button::new("恢复初始设置").rounding(egui::Rounding::same(10.0)))
-                    .clicked()
-                {
+                ui.add_space(button_gap);
+                if settings_footer_button(ui, "恢复初始设置", &self.theme, reset_width).clicked() {
                     let window_pinned = self.window_pinned;
                     let show_sensitive = self.show_sensitive;
                     let preferences = AppPreferences {
@@ -3177,6 +3718,7 @@ impl ClipboardApp {
                     self.apply_preferences(preferences, ctx);
                 }
             });
+            ui.add_space(6.0);
             ui.vertical_centered(|ui| {
                 ui.label(
                     egui::RichText::new(format!("{APP_DISPLAY_NAME} v{}", env!("CARGO_PKG_VERSION")))
@@ -3198,8 +3740,28 @@ fn load_preferences(storage: &Storage) -> AppPreferences {
         .and_then(|value| serde_json::from_str(&value).ok())
         .unwrap_or_default();
     preferences.persistent = true;
-    preferences.sound_enabled = false;
+    preferences.sound_volume = preferences.sound_volume.min(100);
     preferences
+}
+
+fn settings_footer_button(
+    ui: &mut egui::Ui,
+    label: &str,
+    theme: &MacosTokens,
+    width: f32,
+) -> egui::Response {
+    ui.add(
+        egui::Button::new(
+            egui::RichText::new(label)
+                .size(14.0)
+                .strong()
+                .color(theme.fg),
+        )
+        .min_size(egui::vec2(width, 34.0))
+        .fill(theme.card)
+        .stroke(egui::Stroke::new(1.0, theme.border))
+        .rounding(egui::Rounding::same(14.0)),
+    )
 }
 
 fn hotkey_config_from_preferences(preferences: &AppPreferences) -> platform::HotkeyConfig {
@@ -3246,7 +3808,34 @@ fn hotkey_single_record_row(
     });
 }
 
-fn hotkey_string_from_key(key: egui::Key, modifiers: egui::Modifiers) -> Option<String> {
+fn merge_keyboard_modifiers(modifiers: egui::Modifiers) -> platform::KeyboardModifiers {
+    let native = platform::current_keyboard_modifiers();
+    platform::KeyboardModifiers {
+        ctrl: modifiers.ctrl || native.ctrl,
+        shift: modifiers.shift || native.shift,
+        alt: modifiers.alt || native.alt,
+        super_key: modifiers.mac_cmd || native.super_key,
+    }
+}
+
+fn hotkey_string_from_text(text: &str, modifiers: platform::KeyboardModifiers) -> Option<String> {
+    let mut chars = text.chars();
+    let ch = chars.next()?;
+    if chars.next().is_some() || !ch.is_ascii_graphic() {
+        return None;
+    }
+    let key_name = if ch == '+' {
+        "Plus".to_string()
+    } else {
+        ch.to_string()
+    };
+    Some(hotkey_string_from_name(key_name, modifiers))
+}
+
+fn hotkey_string_from_key(
+    key: egui::Key,
+    modifiers: platform::KeyboardModifiers,
+) -> Option<String> {
     let key_name = match key {
         egui::Key::Escape => "Escape".to_string(),
         egui::Key::Enter => "Enter".to_string(),
@@ -3263,44 +3852,56 @@ fn hotkey_string_from_key(key: egui::Key, modifiers: egui::Modifiers) -> Option<
         egui::Key::ArrowLeft => "Left".to_string(),
         egui::Key::ArrowRight => "Right".to_string(),
         egui::Key::Space => "Space".to_string(),
+        egui::Key::Colon => ":".to_string(),
+        egui::Key::Comma => ",".to_string(),
+        egui::Key::Backslash => "\\".to_string(),
+        egui::Key::Slash => "/".to_string(),
+        egui::Key::Pipe => "|".to_string(),
+        egui::Key::Questionmark => "?".to_string(),
+        egui::Key::OpenBracket => "[".to_string(),
+        egui::Key::CloseBracket => "]".to_string(),
+        egui::Key::Backtick => "`".to_string(),
+        egui::Key::Minus => "-".to_string(),
+        egui::Key::Period => ".".to_string(),
+        egui::Key::Plus => "Plus".to_string(),
+        egui::Key::Equals => "=".to_string(),
+        egui::Key::Semicolon => ";".to_string(),
+        egui::Key::Quote => "'".to_string(),
+        egui::Key::Num0 => "0".to_string(),
+        egui::Key::Num1 => "1".to_string(),
+        egui::Key::Num2 => "2".to_string(),
+        egui::Key::Num3 => "3".to_string(),
+        egui::Key::Num4 => "4".to_string(),
+        egui::Key::Num5 => "5".to_string(),
+        egui::Key::Num6 => "6".to_string(),
+        egui::Key::Num7 => "7".to_string(),
+        egui::Key::Num8 => "8".to_string(),
+        egui::Key::Num9 => "9".to_string(),
+        egui::Key::Copy | egui::Key::Cut | egui::Key::Paste => return None,
         other => format!("{other:?}"),
     };
     if matches!(key, egui::Key::Escape) {
         return Some(key_name);
     }
-    if key_name.starts_with("Num") || key_name.starts_with("F") || key_name.len() == 1 {
-        let mut parts = Vec::new();
-        if modifiers.ctrl {
-            parts.push("Ctrl");
-        }
-        if modifiers.shift {
-            parts.push("Shift");
-        }
-        if modifiers.alt {
-            parts.push("Alt");
-        }
-        if modifiers.mac_cmd {
-            parts.push("Super");
-        }
-        parts.push(&key_name);
-        Some(parts.join("+"))
-    } else {
-        let mut parts = Vec::new();
-        if modifiers.ctrl {
-            parts.push("Ctrl".to_string());
-        }
-        if modifiers.shift {
-            parts.push("Shift".to_string());
-        }
-        if modifiers.alt {
-            parts.push("Alt".to_string());
-        }
-        if modifiers.mac_cmd {
-            parts.push("Super".to_string());
-        }
-        parts.push(key_name);
-        Some(parts.join("+"))
+    Some(hotkey_string_from_name(key_name, modifiers))
+}
+
+fn hotkey_string_from_name(key_name: String, modifiers: platform::KeyboardModifiers) -> String {
+    let mut parts = Vec::new();
+    if modifiers.ctrl {
+        parts.push("Ctrl".to_string());
     }
+    if modifiers.shift {
+        parts.push("Shift".to_string());
+    }
+    if modifiers.alt {
+        parts.push("Alt".to_string());
+    }
+    if modifiers.super_key {
+        parts.push("Super".to_string());
+    }
+    parts.push(key_name);
+    parts.join("+")
 }
 
 fn hotkey_equal(left: &str, right: &str) -> bool {
@@ -3337,6 +3938,99 @@ fn app_combo_row(
             });
     });
     *selected != before
+}
+
+fn font_combo_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    selected: &mut String,
+    search: &mut String,
+    choices: &[String],
+    automatic_label: &str,
+    search_hint: &str,
+) -> bool {
+    let before = selected.clone();
+    ui.vertical(|ui| {
+        ui.label(label);
+        let popup_id = ui.make_persistent_id(format!("font_popup_{label}"));
+        let search_id = ui.make_persistent_id(format!("font_search_{label}"));
+        let button_width = ui.available_width().clamp(120.0, 360.0);
+        let button = ui.add_sized(
+            [button_width, 28.0],
+            egui::Button::new(clipped_chip_label(
+                &selected_font_label(selected, automatic_label),
+                32,
+            ))
+            .rounding(egui::Rounding::same(6.0)),
+        );
+        if button.clicked() {
+            ui.memory_mut(|mem| mem.open_popup(popup_id));
+            ui.memory_mut(|mem| mem.data.insert_temp(search_id.with("focus"), true));
+        }
+
+        egui::popup::popup_below_widget(
+            ui,
+            popup_id,
+            &button,
+            egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+            |ui| {
+                ui.set_min_width(button.rect.width().max(180.0));
+                ui.set_max_width(button.rect.width().max(180.0));
+                let search_response = ui.add(
+                    egui::TextEdit::singleline(search)
+                        .id(search_id)
+                        .hint_text(search_hint)
+                        .desired_width(ui.available_width().max(120.0)),
+                );
+                let should_focus = ui
+                    .memory_mut(|mem| mem.data.remove_temp::<bool>(search_id.with("focus")))
+                    .unwrap_or(false);
+                if should_focus {
+                    search_response.request_focus();
+                }
+                ui.separator();
+                if ui
+                    .selectable_label(selected.is_empty(), automatic_label)
+                    .clicked()
+                {
+                    *selected = AUTO_FONT_VALUE.to_string();
+                    ui.memory_mut(|mem| mem.close_popup());
+                }
+                let query = search.trim().to_ascii_lowercase();
+                let mut shown = 0usize;
+                egui::ScrollArea::vertical()
+                    .max_height(260.0)
+                    .show(ui, |ui| {
+                        for choice in choices {
+                            if !query.is_empty() && !choice.to_ascii_lowercase().contains(&query) {
+                                continue;
+                            }
+                            if ui.selectable_label(selected == choice, choice).clicked() {
+                                *selected = choice.clone();
+                                ui.memory_mut(|mem| mem.close_popup());
+                            }
+                            shown += 1;
+                            if shown >= 80 {
+                                ui.label(egui::RichText::new("继续输入可缩小结果...").italics());
+                                break;
+                            }
+                        }
+                        if shown == 0 && !query.is_empty() {
+                            ui.label(egui::RichText::new("未找到匹配字体").italics());
+                        }
+                    });
+            },
+        );
+    });
+    *selected != before
+}
+
+fn selected_font_label(selected: &str, automatic_label: &str) -> String {
+    if selected.trim().is_empty() {
+        automatic_label.to_string()
+    } else {
+        selected.to_string()
+    }
 }
 
 fn selected_app_label(selected: &str, choices: &[platform::AppChoice]) -> String {
@@ -3615,6 +4309,7 @@ impl eframe::App for ClipboardApp {
         }
         self.apply_debug_overlays(ctx);
         self.handle_shortcuts(ctx);
+        self.handle_search_box_scroll(ctx);
         self.drain_events(ctx);
         self.process_pending_paste(ctx);
         // Sample the pointer once per frame so edge-docking doesn't reissue
@@ -3676,6 +4371,7 @@ impl eframe::App for ClipboardApp {
                     .show(ui, |ui| match self.current_page {
                         AppPage::Clipboard => self.draw_history(ui),
                         AppPage::Emoji => self.draw_emoji_page(ui),
+                        AppPage::Symbol => self.draw_symbol_page(ui),
                         AppPage::Settings => self.draw_settings_panel(ui, ctx),
                     });
             });
@@ -3696,27 +4392,174 @@ impl eframe::App for ClipboardApp {
     }
 }
 
-fn configure_fonts(ctx: &egui::Context) {
+fn configure_fonts(ctx: &egui::Context, selection: &FontSelection) {
     let mut fonts = egui::FontDefinitions::default();
-    if let Some((name, bytes)) = load_cjk_font() {
-        fonts
-            .font_data
-            .insert(name.clone(), egui::FontData::from_owned(bytes));
-        fonts
-            .families
-            .entry(egui::FontFamily::Proportional)
-            .or_default()
-            .insert(0, name.clone());
-        fonts
-            .families
-            .entry(egui::FontFamily::Monospace)
-            .or_default()
-            .insert(0, name);
+    if let Some(font) = load_primary_font(selection.primary.as_str()) {
+        insert_font_front(&mut fonts, font);
+    }
+    if let Some(font) = load_fallback_font(selection.fallback.as_str()) {
+        insert_font_back(&mut fonts, font);
     }
     ctx.set_fonts(fonts);
 }
 
-fn load_cjk_font() -> Option<(String, Vec<u8>)> {
+fn insert_font_front(fonts: &mut egui::FontDefinitions, font: LoadedFont) {
+    let name = font.name.clone();
+    let monospaced = font.monospaced || font_is_monospaced_name(&name);
+    fonts.font_data.insert(name.clone(), font_data(font));
+    insert_family_front(fonts, egui::FontFamily::Proportional, &name);
+    if monospaced {
+        insert_family_front(fonts, egui::FontFamily::Monospace, &name);
+    }
+}
+
+fn insert_font_back(fonts: &mut egui::FontDefinitions, font: LoadedFont) {
+    let name = font.name.clone();
+    let monospaced = font.monospaced || font_is_monospaced_name(&name);
+    fonts.font_data.insert(name.clone(), font_data(font));
+    insert_family_back(fonts, egui::FontFamily::Proportional, &name);
+    if monospaced {
+        insert_family_back(fonts, egui::FontFamily::Monospace, &name);
+    }
+}
+
+fn font_data(font: LoadedFont) -> egui::FontData {
+    egui::FontData {
+        index: font.index,
+        ..egui::FontData::from_owned(font.bytes)
+    }
+}
+
+fn insert_family_front(fonts: &mut egui::FontDefinitions, family: egui::FontFamily, name: &str) {
+    let chain = fonts.families.entry(family).or_default();
+    chain.retain(|existing| existing != name);
+    chain.insert(0, name.to_string());
+}
+
+fn insert_family_back(fonts: &mut egui::FontDefinitions, family: egui::FontFamily, name: &str) {
+    let chain = fonts.families.entry(family).or_default();
+    chain.retain(|existing| existing != name);
+    chain.push(name.to_string());
+}
+
+fn font_is_monospaced_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("mono") || lower.contains("code") || lower.contains("unifont")
+}
+
+fn load_primary_font(primary_font: &str) -> Option<LoadedFont> {
+    let primary_font = primary_font.trim();
+    if primary_font.is_empty() {
+        return load_cjk_font();
+    }
+    if primary_font == VENDORED_UNIFONT_LABEL {
+        return Some(load_vendored_unifont());
+    }
+    load_system_font_family(primary_font).or_else(load_cjk_font)
+}
+
+fn load_fallback_font(fallback_font: &str) -> Option<LoadedFont> {
+    if !fallback_font.trim().is_empty() {
+        if fallback_font == VENDORED_UNIFONT_LABEL {
+            return Some(load_vendored_unifont());
+        }
+        return load_system_font_family(fallback_font).or_else(|| Some(load_vendored_unifont()));
+    }
+    UNIFONT_FAMILY_CANDIDATES
+        .iter()
+        .find_map(|family| load_system_font_family(family))
+        .or_else(|| Some(load_vendored_unifont()))
+}
+
+fn discover_system_font_names() -> Vec<String> {
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    let mut names = BTreeSet::new();
+    for face in db.faces() {
+        for (name, _) in &face.families {
+            if !name.trim().is_empty() {
+                names.insert(name.clone());
+            }
+        }
+    }
+    names.insert(VENDORED_UNIFONT_LABEL.to_string());
+    let mut names: Vec<_> = names.into_iter().collect();
+    names.sort_by_key(|name| font_sort_key(name));
+    names
+}
+
+fn load_vendored_unifont() -> LoadedFont {
+    LoadedFont {
+        name: "vendored-gnu-unifont".to_string(),
+        bytes: include_bytes!("../assets/fonts/unifont-17.0.04.otf").to_vec(),
+        index: 0,
+        monospaced: true,
+    }
+}
+
+fn load_system_font_family(family_name: &str) -> Option<LoadedFont> {
+    let family_name = family_name.trim();
+    if family_name.is_empty() {
+        return None;
+    }
+    let mut db = fontdb::Database::new();
+    db.load_system_fonts();
+    let face = db
+        .faces()
+        .filter(|face| {
+            face.families
+                .iter()
+                .any(|(name, _)| name.eq_ignore_ascii_case(family_name))
+        })
+        .min_by_key(|face| {
+            let style_penalty = if face.style == fontdb::Style::Normal {
+                0
+            } else {
+                10_000
+            };
+            let weight_penalty = (face.weight.0 as i32 - fontdb::Weight::NORMAL.0 as i32).abs();
+            style_penalty + weight_penalty
+        })?
+        .clone();
+    let bytes = db.with_face_data(face.id, |data, _index| data.to_vec())?;
+    Some(LoadedFont {
+        name: format!("system-{family_name}"),
+        bytes,
+        index: face.index,
+        monospaced: face.monospaced,
+    })
+}
+
+fn font_sort_key(name: &str) -> (u8, String) {
+    let lower = name.to_ascii_lowercase();
+    let priority = if name == VENDORED_UNIFONT_LABEL
+        || UNIFONT_FAMILY_CANDIDATES
+            .iter()
+            .any(|candidate| lower == candidate.to_ascii_lowercase())
+    {
+        0
+    } else if lower.contains("maple") || lower.contains("noto") || lower.contains("source han") {
+        1
+    } else {
+        2
+    };
+    (priority, lower)
+}
+
+fn load_cjk_font() -> Option<LoadedFont> {
+    for family in [
+        "Maple Mono NF CN",
+        "Noto Sans CJK SC",
+        "Noto Sans CJK",
+        "Source Han Sans CN",
+        "WenQuanYi Micro Hei",
+        "WenQuanYi Zen Hei",
+    ] {
+        if let Some(font) = load_system_font_family(family) {
+            return Some(font);
+        }
+    }
+
     let candidates = [
         "/usr/share/fonts/truetype/MapleMono-NF-CN-unhinted/MapleMono-NF-CN-Regular.ttf",
         "/usr/share/fonts/truetype/MapleMono-NF-CN/MapleMono-NF-CN-Regular.ttf",
@@ -3732,40 +4575,17 @@ fn load_cjk_font() -> Option<(String, Vec<u8>)> {
         "/usr/share/fonts/truetype/arphic/uming.ttc",
     ];
 
-    candidates
-        .iter()
-        .find_map(|path| read_font_path(path))
-        .or_else(load_maple_mono_via_fontconfig)
+    candidates.iter().find_map(|path| read_font_path(path))
 }
 
-fn read_font_path(path: &str) -> Option<(String, Vec<u8>)> {
-    fs::read(path)
-        .ok()
-        .map(|bytes| (font_name_from_path(path), bytes))
-}
-
-#[cfg(target_os = "linux")]
-fn load_maple_mono_via_fontconfig() -> Option<(String, Vec<u8>)> {
-    let output = Command::new("fc-match")
-        .args(["-f", "%{file}", "Maple Mono NF CN"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-
-    let path = String::from_utf8(output.stdout).ok()?;
-    let path = path.trim();
-    if path.is_empty() {
-        return None;
-    }
-
-    read_font_path(path)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn load_maple_mono_via_fontconfig() -> Option<(String, Vec<u8>)> {
-    None
+fn read_font_path(path: &str) -> Option<LoadedFont> {
+    let bytes = fs::read(path).ok()?;
+    Some(LoadedFont {
+        name: font_name_from_path(path),
+        bytes,
+        index: 0,
+        monospaced: path.to_ascii_lowercase().contains("mono"),
+    })
 }
 
 fn font_name_from_path(path: &str) -> String {
@@ -3884,12 +4704,61 @@ fn hex_to_color32(hex: &str) -> Option<egui::Color32> {
 }
 
 fn emoji_button(ui: &mut egui::Ui, emoji: &str, theme: &MacosTokens) -> egui::Response {
+    let size = egui::vec2(38.0, 38.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+
+    if ui.is_rect_visible(rect) {
+        let fill = if response.hovered() {
+            theme.history_hover
+        } else {
+            theme.history_bg
+        };
+        ui.painter().rect(
+            rect,
+            egui::Rounding::same(10.0),
+            fill,
+            egui::Stroke::new(1.0, theme.border),
+        );
+
+        let emoji_rect = egui::Rect::from_center_size(rect.center(), egui::vec2(25.0, 25.0));
+        if let Some(source) = twemoji_source(emoji) {
+            egui::Image::new(source)
+                .fit_to_exact_size(emoji_rect.size())
+                .paint_at(ui, emoji_rect);
+        } else {
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                emoji,
+                egui::FontId::proportional(22.0),
+                theme.fg,
+            );
+        }
+    }
+
+    response
+}
+
+fn twemoji_source(emoji: &str) -> Option<egui::ImageSource<'static>> {
+    let svg_data = twemoji_assets::svg::SvgTwemojiAsset::from_emoji(emoji)?;
+    Some(egui::ImageSource::Bytes {
+        uri: format!("twemoji-{emoji}.svg").into(),
+        bytes: egui::load::Bytes::Static(svg_data.as_bytes()),
+    })
+}
+
+fn symbol_button(ui: &mut egui::Ui, symbol: &str, theme: &MacosTokens) -> egui::Response {
     ui.add(
-        egui::Button::new(egui::RichText::new(emoji).size(20.0))
-            .fill(theme.history_bg)
-            .stroke(egui::Stroke::new(1.0, theme.border))
-            .rounding(egui::Rounding::same(10.0))
-            .min_size(egui::vec2(34.0, 34.0)),
+        egui::Button::new(
+            egui::RichText::new(symbol)
+                .size(18.0)
+                .strong()
+                .color(theme.fg),
+        )
+        .fill(theme.history_bg)
+        .stroke(egui::Stroke::new(1.0, theme.border))
+        .rounding(egui::Rounding::same(10.0))
+        .min_size(egui::vec2(34.0, 34.0)),
     )
 }
 
@@ -3950,16 +4819,23 @@ fn vector_toolbar_button(
 ) -> egui::Response {
     let desired_size = egui::vec2(TOOLBAR_BUTTON_SIZE, TOOLBAR_BUTTON_SIZE);
     let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+    let active = matches!(icon, ToolbarIcon::Unpin);
     paint_icon_button(
         ui,
         rect,
         &response,
         icon,
-        theme.fg,
+        if active {
+            egui::Color32::WHITE
+        } else {
+            theme.fg
+        },
+        theme.card,
         theme.card_hover,
+        if active { Some(theme.accent) } else { None },
         egui::Stroke::new(1.0, theme.border),
-        10.0,
-        7.0,
+        TOOLBAR_BUTTON_RADIUS,
+        TOOLBAR_ICON_SIZE,
     );
     response
 }
@@ -3979,10 +4855,12 @@ fn action_bar_button(
         &response,
         icon,
         icon_color,
+        egui::Color32::TRANSPARENT,
         hover_bg,
+        None,
         egui::Stroke::new(1.0, scale_alpha(icon_color, 0.18)),
         7.0,
-        2.0,
+        (rect.width() - 4.0).max(8.0),
     );
     response
 }
@@ -3994,22 +4872,32 @@ fn paint_icon_button(
     response: &egui::Response,
     icon: ToolbarIcon,
     icon_color: egui::Color32,
+    idle_bg: egui::Color32,
     hover_bg: egui::Color32,
+    active_bg: Option<egui::Color32>,
     border: egui::Stroke,
     rounding: f32,
-    padding: f32,
+    icon_size: f32,
 ) {
     if ui.is_rect_visible(rect) {
-        let fill = if response.is_pointer_button_down_on() {
+        let fill = if let Some(active_bg) = active_bg {
+            if response.is_pointer_button_down_on() {
+                scale_alpha(active_bg, 0.86)
+            } else {
+                active_bg
+            }
+        } else if response.is_pointer_button_down_on() {
             scale_alpha(hover_bg, 1.35)
         } else if response.hovered() {
             hover_bg
         } else {
-            egui::Color32::TRANSPARENT
+            idle_bg
         };
         ui.painter()
             .rect(rect, egui::Rounding::same(rounding), fill, border);
-        paint_toolbar_icon(ui.painter(), rect.shrink(padding), icon, icon_color);
+        let icon_rect =
+            egui::Rect::from_center_size(rect.center(), egui::vec2(icon_size, icon_size));
+        paint_toolbar_icon(ui.painter(), icon_rect, icon, icon_color);
     }
 }
 
@@ -4019,141 +4907,99 @@ fn paint_toolbar_icon(
     icon: ToolbarIcon,
     color: egui::Color32,
 ) {
-    let stroke = egui::Stroke::new(2.2, color);
-    let c = rect.center();
-    let l = rect.left();
-    let r = rect.right();
-    let t = rect.top();
-    let b = rect.bottom();
+    let stroke = egui::Stroke::new(TOOLBAR_ICON_STROKE_WIDTH, color);
+    let p = |x: f32, y: f32| {
+        egui::pos2(
+            rect.left() + rect.width() * x / 24.0,
+            rect.top() + rect.height() * y / 24.0,
+        )
+    };
+    let circle = |x: f32, y: f32, radius: f32| {
+        let scale = rect.width().min(rect.height()) / 24.0;
+        (p(x, y), radius * scale)
+    };
     match icon {
         ToolbarIcon::Back => {
-            painter.line_segment(
-                [egui::pos2(r - 2.0, t + 1.5), egui::pos2(l + 4.0, c.y)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(l + 4.0, c.y), egui::pos2(r - 2.0, b - 1.5)],
-                stroke,
-            );
+            painter.line_segment([p(15.0, 18.0), p(9.0, 12.0)], stroke);
+            painter.line_segment([p(9.0, 12.0), p(15.0, 6.0)], stroke);
         }
         ToolbarIcon::Close => {
-            painter.line_segment(
-                [egui::pos2(l + 3.0, t + 3.0), egui::pos2(r - 3.0, b - 3.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(r - 3.0, t + 3.0), egui::pos2(l + 3.0, b - 3.0)],
-                stroke,
-            );
+            painter.line_segment([p(18.0, 6.0), p(6.0, 18.0)], stroke);
+            painter.line_segment([p(6.0, 6.0), p(18.0, 18.0)], stroke);
         }
         ToolbarIcon::Settings => {
-            painter.circle_stroke(c, 5.0, stroke);
-            for i in 0..8 {
-                let a = i as f32 * std::f32::consts::TAU / 8.0;
-                let inner = c + egui::vec2(a.cos() * 8.0, a.sin() * 8.0);
-                let outer = c + egui::vec2(a.cos() * 10.5, a.sin() * 10.5);
-                painter.line_segment([inner, outer], stroke);
+            let (center, inner_radius) = circle(12.0, 12.0, 3.0);
+            let mut gear = Vec::with_capacity(17);
+            for i in 0..16 {
+                let angle = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::TAU / 16.0;
+                let radius = if i % 2 == 0 { 9.5 } else { 7.2 };
+                gear.push(p(12.0 + angle.cos() * radius, 12.0 + angle.sin() * radius));
             }
+            gear.push(gear[0]);
+            painter.add(egui::Shape::line(gear, stroke));
+            painter.circle_stroke(center, inner_radius, stroke);
         }
         ToolbarIcon::Emoji => {
-            painter.circle_stroke(c, 10.0, stroke);
-            painter.circle_filled(egui::pos2(c.x - 4.0, c.y - 3.0), 1.6, color);
-            painter.circle_filled(egui::pos2(c.x + 4.0, c.y - 3.0), 1.6, color);
-            painter.line_segment(
-                [
-                    egui::pos2(c.x - 4.0, c.y + 4.0),
-                    egui::pos2(c.x + 4.0, c.y + 4.0),
-                ],
-                stroke,
-            );
+            let (center, radius) = circle(12.0, 12.0, 10.0);
+            painter.circle_stroke(center, radius, stroke);
+            painter.circle_filled(circle(9.0, 10.0, 1.0).0, circle(9.0, 10.0, 1.0).1, color);
+            painter.circle_filled(circle(15.0, 10.0, 1.0).0, circle(15.0, 10.0, 1.0).1, color);
+            let smile = [
+                p(8.0, 15.0),
+                p(10.0, 17.0),
+                p(12.0, 17.5),
+                p(14.0, 17.0),
+                p(16.0, 15.0),
+            ];
+            painter.add(egui::Shape::line(smile.to_vec(), stroke));
         }
         ToolbarIcon::Clear => {
-            painter.line_segment(
-                [egui::pos2(l + 4.0, t + 6.0), egui::pos2(r - 4.0, t + 6.0)],
-                stroke,
-            );
-            painter.rect_stroke(
-                egui::Rect::from_min_max(
-                    egui::pos2(l + 6.0, t + 8.0),
-                    egui::pos2(r - 6.0, b - 3.0),
-                ),
-                egui::Rounding::same(2.0),
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(c.x - 3.0, t + 3.0),
-                    egui::pos2(c.x + 3.0, t + 3.0),
-                ],
-                stroke,
-            );
+            painter.line_segment([p(3.0, 6.0), p(21.0, 6.0)], stroke);
+            painter.line_segment([p(6.0, 6.0), p(7.2, 20.0)], stroke);
+            painter.line_segment([p(18.0, 6.0), p(16.8, 20.0)], stroke);
+            painter.line_segment([p(10.0, 11.0), p(10.0, 17.0)], stroke);
+            painter.line_segment([p(14.0, 11.0), p(14.0, 17.0)], stroke);
+            painter.line_segment([p(7.2, 20.0), p(16.8, 20.0)], stroke);
+            painter.line_segment([p(10.0, 3.0), p(14.0, 3.0)], stroke);
+            painter.line_segment([p(10.0, 3.0), p(9.0, 6.0)], stroke);
+            painter.line_segment([p(14.0, 3.0), p(15.0, 6.0)], stroke);
         }
         ToolbarIcon::Pin | ToolbarIcon::Unpin => {
-            painter.line_segment([egui::pos2(c.x, t + 3.0), egui::pos2(c.x, b - 4.0)], stroke);
-            painter.line_segment(
-                [
-                    egui::pos2(l + 5.0, c.y - 3.0),
-                    egui::pos2(r - 5.0, c.y - 3.0),
-                ],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(l + 8.0, t + 4.0), egui::pos2(r - 8.0, t + 4.0)],
-                stroke,
-            );
+            let pin_body = [
+                p(8.0, 3.0),
+                p(16.0, 3.0),
+                p(16.0, 7.0),
+                p(15.0, 7.0),
+                p(15.0, 12.0),
+                p(18.0, 16.0),
+                p(6.0, 16.0),
+                p(9.0, 12.0),
+                p(9.0, 7.0),
+                p(8.0, 7.0),
+                p(8.0, 3.0),
+            ];
+            painter.add(egui::Shape::line(pin_body.to_vec(), stroke));
+            painter.line_segment([p(12.0, 17.0), p(12.0, 22.0)], stroke);
             if matches!(icon, ToolbarIcon::Unpin) {
-                painter.line_segment(
-                    [egui::pos2(l + 3.0, b - 3.0), egui::pos2(r - 3.0, t + 3.0)],
-                    stroke,
-                );
+                painter.line_segment([p(4.0, 20.0), p(20.0, 4.0)], stroke);
             }
         }
         ToolbarIcon::Open => {
             painter.rect_stroke(
-                egui::Rect::from_min_max(
-                    egui::pos2(l + 3.0, t + 7.0),
-                    egui::pos2(r - 7.0, b - 3.0),
-                ),
+                egui::Rect::from_min_max(p(5.0, 8.0), p(16.0, 19.0)),
                 egui::Rounding::same(2.0),
                 stroke,
             );
-            painter.line_segment(
-                [egui::pos2(l + 8.0, t + 5.0), egui::pos2(r - 3.0, t + 5.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(r - 3.0, t + 5.0), egui::pos2(r - 3.0, b - 8.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(r - 4.0, t + 6.0), egui::pos2(l + 8.0, b - 6.0)],
-                stroke,
-            );
+            painter.line_segment([p(10.0, 5.0), p(19.0, 5.0)], stroke);
+            painter.line_segment([p(19.0, 5.0), p(19.0, 14.0)], stroke);
+            painter.line_segment([p(18.0, 6.0), p(10.0, 14.0)], stroke);
         }
         ToolbarIcon::Dev => {
-            painter.line_segment(
-                [egui::pos2(l + 4.0, c.y), egui::pos2(l + 9.0, t + 5.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(l + 4.0, c.y), egui::pos2(l + 9.0, b - 5.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(r - 4.0, c.y), egui::pos2(r - 9.0, t + 5.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [egui::pos2(r - 4.0, c.y), egui::pos2(r - 9.0, b - 5.0)],
-                stroke,
-            );
-            painter.line_segment(
-                [
-                    egui::pos2(c.x + 2.0, t + 3.0),
-                    egui::pos2(c.x - 2.0, b - 3.0),
-                ],
-                stroke,
-            );
+            painter.line_segment([p(8.0, 8.0), p(4.0, 12.0)], stroke);
+            painter.line_segment([p(4.0, 12.0), p(8.0, 16.0)], stroke);
+            painter.line_segment([p(16.0, 8.0), p(20.0, 12.0)], stroke);
+            painter.line_segment([p(20.0, 12.0), p(16.0, 16.0)], stroke);
+            painter.line_segment([p(14.0, 4.0), p(10.0, 20.0)], stroke);
         }
     }
 }
@@ -4177,6 +5023,23 @@ fn kind_badge(ui: &mut egui::Ui, label: &str, theme: &MacosTokens) {
                     .italics()
                     .color(theme.muted),
             );
+        });
+}
+
+fn source_app_badge(ui: &mut egui::Ui, source: &str, theme: &MacosTokens) {
+    let label = clipped_chip_label(source.trim(), 18);
+    egui::Frame::none()
+        .fill(theme.data_bg)
+        .stroke(egui::Stroke::new(1.0, theme.data_border))
+        .rounding(egui::Rounding::same(99.0))
+        .inner_margin(egui::Margin {
+            left: 7.0,
+            right: 7.0,
+            top: 3.0,
+            bottom: 3.0,
+        })
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(label).size(10.5).color(theme.muted));
         });
 }
 
@@ -4226,6 +5089,99 @@ fn thumbnail_placeholder(ui: &mut egui::Ui, label: &str, theme: &MacosTokens) {
 
 fn row_preview_text(summary: &ClipboardEntrySummary) -> std::borrow::Cow<'_, str> {
     std::borrow::Cow::Borrowed(&summary.preview)
+}
+
+fn rich_html_hover_text(html: &str, fallback_text: &str) -> String {
+    let text = strip_html_for_preview(html);
+    let text = if text.trim().is_empty() {
+        fallback_text.trim().to_string()
+    } else {
+        text
+    };
+    truncate_chars(&text, 1400)
+}
+
+fn strip_html_for_preview(html: &str) -> String {
+    let mut output = String::new();
+    let mut in_tag = false;
+    let mut last_space = true;
+    let mut chars = html.chars().peekable();
+    while let Some(ch) = chars.next() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                let mut tag = String::new();
+                while let Some(next) = chars.peek().copied() {
+                    if next == '>' || next.is_whitespace() || next == '/' {
+                        break;
+                    }
+                    tag.push(next.to_ascii_lowercase());
+                    chars.next();
+                }
+                if matches!(tag.as_str(), "br" | "p" | "div" | "li" | "tr" | "table") && !last_space
+                {
+                    output.push('\n');
+                    last_space = true;
+                }
+            }
+            '>' if in_tag => in_tag = false,
+            _ if in_tag => {}
+            '&' => {
+                let mut entity = String::new();
+                while let Some(next) = chars.peek().copied() {
+                    if next == ';' || entity.len() > 12 {
+                        break;
+                    }
+                    entity.push(next);
+                    chars.next();
+                }
+                if chars.peek().copied() == Some(';') {
+                    chars.next();
+                    let decoded = match entity.as_str() {
+                        "nbsp" => ' ',
+                        "amp" => '&',
+                        "lt" => '<',
+                        "gt" => '>',
+                        "quot" => '"',
+                        "apos" => '\'',
+                        _ => ' ',
+                    };
+                    append_preview_char(&mut output, decoded, &mut last_space);
+                } else {
+                    append_preview_char(&mut output, ch, &mut last_space);
+                }
+            }
+            _ => append_preview_char(&mut output, ch, &mut last_space),
+        }
+    }
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn append_preview_char(output: &mut String, ch: char, last_space: &mut bool) {
+    if ch.is_whitespace() {
+        if !*last_space {
+            output.push(' ');
+            *last_space = true;
+        }
+    } else {
+        output.push(ch);
+        *last_space = false;
+    }
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{truncated}…")
+    } else {
+        truncated
+    }
 }
 
 fn fit_texture_size(size: egui::Vec2, max: egui::Vec2) -> egui::Vec2 {
