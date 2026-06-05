@@ -110,11 +110,11 @@ jobs:
 
       - name: Install linuxdeploy
         env:
-          LINUXDEPLOY_VERSION: 2.0.0+git20241005-1
+          LINUXDEPLOY_VERSION: 1-alpha-20251107-1
           LINUXDEPLOY_ASSET: ${{ matrix.linuxdeploy_asset }}
         run: |
-          wget -qO linuxdeploy \
-            "https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/${LINUXDEPLOY_ASSET}"
+          linuxdeploy_url="https://github.com/linuxdeploy/linuxdeploy/releases/download/${LINUXDEPLOY_VERSION}/${LINUXDEPLOY_ASSET}"
+          wget -qO linuxdeploy --retry-connrefused --tries=5 --timeout=30 "${linuxdeploy_url}"
           chmod +x linuxdeploy
 
       - name: Prepare Linux package metadata
