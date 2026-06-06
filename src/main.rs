@@ -1,5 +1,6 @@
 mod app;
 mod clipboard;
+mod emoji_data;
 mod model;
 mod platform;
 mod sound;

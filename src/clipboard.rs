@@ -192,7 +192,7 @@ fn set_html(text: &str, html: &str) -> Result<(), String> {
         .map_err(|err| format!("写入富文本剪贴板失败: {err}"))
 }
 
-fn set_file_list(content: &str) -> Result<(), String> {
+pub fn set_file_list(content: &str) -> Result<(), String> {
     let paths = content
         .lines()
         .map(normalize_file_path)

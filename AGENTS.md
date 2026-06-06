@@ -18,6 +18,7 @@ tiez-slim-linux/
     ├── main.rs       # opens storage, cleanup, launches eframe
     ├── app.rs        # main UI/controller; largest file
     ├── clipboard.rs  # arboard polling watcher and write-back
+    ├── emoji_data.rs # generated Twemoji + Unicode CLDR emoji grouping data
     ├── model.rs      # entry model, kind detection, sensitivity heuristics
     ├── storage.rs    # rusqlite schema, queries, tags, tests
     ├── ui/           # macOS-style theme tokens and custom widgets
@@ -33,6 +34,7 @@ Generated/cache directories such as `.zig-cache/`, `.dvui-cache/`, `.opencode/`,
 | Startup, dev-mode flag, window size | `src/main.rs` | `--dev`, `TIEZ_SLIM_LINUX_DEV=1`, legacy `MYCLIPBOARD_DEV=1`, or `devtools` feature enables debug UI. |
 | Clipboard capture path | `src/clipboard.rs` -> `src/model.rs` -> `src/storage.rs` | Polls text every 700 ms; deduplication happens in storage. |
 | Main UI, shortcuts, filters, preferences | `src/app.rs` | Large `egui` surface; preserve dense TieZ-style layout. |
+| Emoji grouping data | `src/emoji_data.rs` | Auto-generated from `twemoji-assets` + Unicode `emoji-test.txt`; regenerate with `scripts/generate_emoji_data.py`, do not hand-edit. |
 | Theme tokens, macOS-style widgets | `src/ui/` | `MacosTokens` for light/dark palettes; `macos_toggle` and `macos_range_slider` for settings UI. |
 | Schema, migrations, tags, retention | `src/storage.rs` | Only current unit tests live here. |
 | Kind/sensitive detection | `src/model.rs` | `MAX_ENTRIES`, `MAX_CONTENT_BYTES`, `RETENTION_DAYS` live here; 5 built-in sensitive kinds: phone, idcard, email, secret, password. |
@@ -65,6 +67,7 @@ Generated/cache directories such as `.zig-cache/`, `.dvui-cache/`, `.opencode/`,
 cargo run
 cargo run -- --dev
 TIEZ_SLIM_LINUX_DEV=1 cargo run
+scripts/generate_emoji_data.py
 cargo test
 cargo build --release
 ```

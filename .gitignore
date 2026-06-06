@@ -1,5 +1,6 @@
 /target/
 /.sisyphus/
+/.golutra/
 /.zig-cache/
 /.dvui-cache/
 .DS_Store

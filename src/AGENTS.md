@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | App bootstrap | `main.rs` | Keep startup small: open storage, cleanup, configure `eframe::NativeOptions`, launch app. |
 | UI rendering and commands | `app.rs` | `ClipboardApp` methods are grouped by state updates first, drawing later, helpers at the bottom. |
+| Emoji grouping data | `emoji_data.rs` | Auto-generated Twemoji + Unicode `emoji-test.txt` / CLDR groups; regenerate with `../scripts/generate_emoji_data.py`, do not hand-edit. |
 | Clipboard polling | `clipboard.rs` | Watcher thread sends `ClipboardEvent::Captured` or `ClipboardEvent::Error` over `crossbeam_channel`. |
 | Entry classification | `model.rs` | URL/file/data URL/code/sensitive heuristics are string-based and intentionally conservative. |
 | SQLite persistence | `storage.rs` | Schema creation/migration, settings table, entries/tags queries, and storage tests. |
@@ -30,6 +31,7 @@
 - `ClipboardEntry::captured_text` rejects empty text and values over `MAX_CONTENT_BYTES`; keep this before save.
 - Sensitive masking combines tag names (`sensitive`, `密码`, `password`, `secret`) with content heuristics.
 - Settings are stored in SQLite as JSON strings keyed by constants, including `PREFERENCES_KEY` in `app.rs`.
+- `emoji_data.rs` is generated data; update the generator script rather than editing the emoji arrays manually.
 - Platform modules should expose `active_app_name`, `platform_note`, and `capabilities` through `platform/mod.rs`.
 
 ## 主题与样式
