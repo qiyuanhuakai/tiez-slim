@@ -398,6 +398,48 @@ struct AppPreferences {
     fallback_font: String,
     #[serde(default = "default_language")]
     language: String,
+
+    // #3 黑名单 + 私有模式
+    #[serde(default = "default_app_exclusion_list")]
+    app_exclusion_list: Vec<String>,
+    #[serde(default = "default_private_mode")]
+    private_mode: bool,
+    #[serde(default = "default_private_mode_hotkey")]
+    private_mode_hotkey: String,
+
+    // #5 备份
+    #[serde(default = "default_auto_backup_enabled")]
+    auto_backup_enabled: bool,
+    #[serde(default = "default_backup_retention_count")]
+    backup_retention_count: i32,
+    #[serde(default)]
+    last_backup_at: Option<i64>,
+
+    // #2 Primary Selection
+    #[serde(default = "default_primary_selection_enabled")]
+    primary_selection_enabled: bool,
+    #[serde(default)]
+    primary_degraded: bool,
+
+    // #10 fuzzy search
+    #[serde(default = "default_search_mode")]
+    search_mode: String,
+
+    // #7 encryption (opt-in)
+    #[serde(default = "default_secure_storage_enabled")]
+    secure_storage_enabled: bool,
+
+    // #4 KDE Connect
+    #[serde(default = "default_kde_connect_enabled")]
+    kde_connect_enabled: bool,
+    #[serde(default)]
+    kde_connect_device_id: Option<String>,
+    #[serde(default = "default_kde_connect_device_name")]
+    kde_connect_device_name: String,
+
+    // #6 CLI
+    #[serde(default)]
+    cli_socket_path: Option<String>,
 }
 
 fn default_privacy_protection_kinds() -> Vec<String> {
@@ -424,6 +466,46 @@ fn default_language() -> String {
 
 fn default_surface_opacity() -> u8 {
     50
+}
+
+fn default_app_exclusion_list() -> Vec<String> {
+    Vec::new()
+}
+
+fn default_private_mode() -> bool {
+    false
+}
+
+fn default_private_mode_hotkey() -> String {
+    "Ctrl+Alt+P".to_string()
+}
+
+fn default_auto_backup_enabled() -> bool {
+    true
+}
+
+fn default_backup_retention_count() -> i32 {
+    10
+}
+
+fn default_primary_selection_enabled() -> bool {
+    true
+}
+
+fn default_search_mode() -> String {
+    "fuzzy".to_string()
+}
+
+fn default_secure_storage_enabled() -> bool {
+    false
+}
+
+fn default_kde_connect_enabled() -> bool {
+    false
+}
+
+fn default_kde_connect_device_name() -> String {
+    "tiez-slim-linux".to_string()
 }
 
 impl Default for AppPreferences {
@@ -477,6 +559,20 @@ impl Default for AppPreferences {
             primary_font: String::new(),
             fallback_font: String::new(),
             language: default_language(),
+            app_exclusion_list: Vec::new(),
+            private_mode: false,
+            private_mode_hotkey: "Ctrl+Alt+P".to_string(),
+            auto_backup_enabled: true,
+            backup_retention_count: 10,
+            last_backup_at: None,
+            primary_selection_enabled: true,
+            primary_degraded: false,
+            search_mode: "fuzzy".to_string(),
+            secure_storage_enabled: false,
+            kde_connect_enabled: false,
+            kde_connect_device_id: None,
+            kde_connect_device_name: "tiez-slim-linux".to_string(),
+            cli_socket_path: None,
         }
     }
 }
@@ -590,6 +686,20 @@ pub struct ClipboardApp {
     pub(crate) primary_font: String,
     pub(crate) fallback_font: String,
     pub(crate) language: String,
+    pub(crate) app_exclusion_list: Vec<String>,
+    pub(crate) private_mode: bool,
+    pub(crate) private_mode_hotkey: String,
+    pub(crate) auto_backup_enabled: bool,
+    pub(crate) backup_retention_count: i32,
+    pub(crate) last_backup_at: Option<i64>,
+    pub(crate) primary_selection_enabled: bool,
+    pub(crate) primary_degraded: bool,
+    pub(crate) search_mode: String,
+    pub(crate) secure_storage_enabled: bool,
+    pub(crate) kde_connect_enabled: bool,
+    pub(crate) kde_connect_device_id: Option<String>,
+    pub(crate) kde_connect_device_name: String,
+    pub(crate) cli_socket_path: Option<String>,
     pub(crate) font_choices: Vec<String>,
     pub(crate) primary_font_search: String,
     pub(crate) fallback_font_search: String,
@@ -750,6 +860,20 @@ impl ClipboardApp {
             primary_font: preferences.primary_font.clone(),
             fallback_font: preferences.fallback_font.clone(),
             language: preferences.language.clone(),
+            app_exclusion_list: preferences.app_exclusion_list,
+            private_mode: preferences.private_mode,
+            private_mode_hotkey: preferences.private_mode_hotkey,
+            auto_backup_enabled: preferences.auto_backup_enabled,
+            backup_retention_count: preferences.backup_retention_count,
+            last_backup_at: preferences.last_backup_at,
+            primary_selection_enabled: preferences.primary_selection_enabled,
+            primary_degraded: preferences.primary_degraded,
+            search_mode: preferences.search_mode,
+            secure_storage_enabled: preferences.secure_storage_enabled,
+            kde_connect_enabled: preferences.kde_connect_enabled,
+            kde_connect_device_id: preferences.kde_connect_device_id,
+            kde_connect_device_name: preferences.kde_connect_device_name,
+            cli_socket_path: preferences.cli_socket_path,
             font_choices,
             primary_font_search: String::new(),
             fallback_font_search: String::new(),
@@ -1879,6 +2003,20 @@ impl ClipboardApp {
             primary_font: self.primary_font.clone(),
             fallback_font: self.fallback_font.clone(),
             language: self.language.clone(),
+            app_exclusion_list: self.app_exclusion_list.clone(),
+            private_mode: self.private_mode,
+            private_mode_hotkey: self.private_mode_hotkey.clone(),
+            auto_backup_enabled: self.auto_backup_enabled,
+            backup_retention_count: self.backup_retention_count,
+            last_backup_at: self.last_backup_at,
+            primary_selection_enabled: self.primary_selection_enabled,
+            primary_degraded: self.primary_degraded,
+            search_mode: self.search_mode.clone(),
+            secure_storage_enabled: self.secure_storage_enabled,
+            kde_connect_enabled: self.kde_connect_enabled,
+            kde_connect_device_id: self.kde_connect_device_id.clone(),
+            kde_connect_device_name: self.kde_connect_device_name.clone(),
+            cli_socket_path: self.cli_socket_path.clone(),
         }
     }
 
@@ -1996,6 +2134,20 @@ impl ClipboardApp {
             crate::i18n::set_app_locale(&self.language);
         }
         self.surface_opacity = preferences.surface_opacity;
+        self.app_exclusion_list = preferences.app_exclusion_list;
+        self.private_mode = preferences.private_mode;
+        self.private_mode_hotkey = preferences.private_mode_hotkey;
+        self.auto_backup_enabled = preferences.auto_backup_enabled;
+        self.backup_retention_count = preferences.backup_retention_count;
+        self.last_backup_at = preferences.last_backup_at;
+        self.primary_selection_enabled = preferences.primary_selection_enabled;
+        self.primary_degraded = preferences.primary_degraded;
+        self.search_mode = preferences.search_mode;
+        self.secure_storage_enabled = preferences.secure_storage_enabled;
+        self.kde_connect_enabled = preferences.kde_connect_enabled;
+        self.kde_connect_device_id = preferences.kde_connect_device_id;
+        self.kde_connect_device_name = preferences.kde_connect_device_name;
+        self.cli_socket_path = preferences.cli_socket_path;
         self.theme = resolve_theme(&self.color_mode);
         configure_fonts(ctx, &self.font_selection());
         self.configure_style(ctx);
