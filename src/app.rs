@@ -419,7 +419,7 @@ fn default_color_mode() -> String {
 }
 
 fn default_language() -> String {
-    "zh-CN".to_string()
+    "follow-system".to_string()
 }
 
 fn default_surface_opacity() -> u8 {
@@ -594,6 +594,7 @@ pub struct ClipboardApp {
     primary_font_search: String,
     fallback_font_search: String,
     paste_method_search: String,
+    language_search: String,
     text_app_search: String,
     url_app_search: String,
     code_app_search: String,
@@ -753,6 +754,7 @@ impl ClipboardApp {
             primary_font_search: String::new(),
             fallback_font_search: String::new(),
             paste_method_search: String::new(),
+            language_search: String::new(),
             text_app_search: String::new(),
             url_app_search: String::new(),
             code_app_search: String::new(),
@@ -3393,34 +3395,32 @@ impl ClipboardApp {
             let mut expanded = !prev;
             let theme = self.theme.clone();
             macos_collapsible_group(ui, t!("settings.general.title"), &mut expanded, &theme, |ui| {
-                ui.label(t!("settings.general.language"));
-                let lang_label = match self.language.as_str() {
-                    "zh-CN" => t!("settings.general.language_option_zh_cn"),
-                    "en-US" => t!("settings.general.language_option_en_us"),
-                    _ => t!("settings.general.language_option_follow_system"),
-                };
-                egui::ComboBox::from_id_source("language_selector")
-                    .selected_text(lang_label.as_ref())
-                    .show_ui(ui, |ui: &mut egui::Ui| {
-                        let options = [
-                            ("zh-CN", t!("settings.general.language_option_zh_cn")),
-                            ("en-US", t!("settings.general.language_option_en_us")),
-                            ("follow-system", t!("settings.general.language_option_follow_system")),
-                        ];
-                        for (value, label) in options {
-                            if ui.selectable_label(self.language == value, label.as_ref()).clicked() {
-                                if value == "follow-system" {
-                                    let detected = crate::i18n::detect_system_locale();
-                                    crate::i18n::set_app_locale(&detected);
-                                    self.language = detected;
-                                } else {
-                                    crate::i18n::set_app_locale(value);
-                                    self.language = value.to_string();
-                                }
-                                self.persist_preferences();
-                            }
+                let lang_options = [
+                        DropdownOption::borrowed("zh-CN", t!("settings.general.language_option_zh_cn")),
+                        DropdownOption::borrowed("en-US", t!("settings.general.language_option_en_us")),
+                        DropdownOption::borrowed("follow-system", t!("settings.general.language_option_follow_system")),
+                    ];
+                    if searchable_combo_row(
+                        ui,
+                        t!("settings.general.language"),
+                        &mut self.language,
+                        &mut self.language_search,
+                        &lang_options,
+                        "",
+                        &self.theme,
+                    ) {
+                        // 关键修复: "follow-system" 必须存储原始值,不要 resolve 成具体 locale
+                        let new_value = self.language.clone();
+                        if new_value == "follow-system" {
+                            let detected = crate::i18n::detect_system_locale();
+                            crate::i18n::set_app_locale(&detected);
+                            self.language = "follow-system".to_string();
+                        } else {
+                            crate::i18n::set_app_locale(&new_value);
+                            self.language = new_value;
                         }
-                    });
+                        self.persist_preferences();
+                    }
                 ui.label(
                     egui::RichText::new(t!("settings.general.language_desc"))
                         .color(self.theme.muted),
@@ -6510,7 +6510,7 @@ use crate::emoji_data::{ALL_TWEMOJI_EMOJIS, EMOJI_GROUPS};
 
     #[test]
     fn test_default_language() {
-        assert_eq!(super::default_language(), "zh-CN");
+        assert_eq!(super::default_language(), "follow-system");
     }
 
     #[test]
@@ -6518,7 +6518,7 @@ use crate::emoji_data::{ALL_TWEMOJI_EMOJIS, EMOJI_GROUPS};
         let old_json = r#"{"show_sensitive":false}"#;
         let prefs: super::AppPreferences =
             serde_json::from_str(old_json).expect("old preferences without language must deserialize");
-        assert_eq!(prefs.language, "zh-CN");
+        assert_eq!(prefs.language, "follow-system");
     }
 
     fn png_signature_bytes() -> Vec<u8> {
