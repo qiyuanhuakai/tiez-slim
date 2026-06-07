@@ -668,6 +668,16 @@ pub struct ClipboardApp {
     pub(crate) recording_hotkey: Option<HotkeyTarget>,
     image_textures: HashMap<i64, egui::TextureHandle>,
     hotkey_handle: platform::HotkeyUpdateHandle,
+    /// In-memory hotkey registry (Metis M1). The X11 GrabKey listener
+    /// in `platform::linux` is the authoritative source for OS-level
+    /// grabbing; this manager only does conflict detection and exposes
+    /// a single point of truth for the UI settings panel.
+    hotkey_manager: HotkeyManager,
+    /// Shared flag flipped by the UI thread when the user toggles
+    /// private mode. The clipboard watcher thread polls this at the
+    /// top of each iteration and short-circuits all capture paths
+    /// while it is set.
+    private_mode_flag: Arc<AtomicBool>,
     pub(crate) tray_handle: Option<platform::TrayHandle>,
     pub(crate) search_box_revealed: bool,
     search_scroll_gate: SearchScrollGate,
@@ -751,7 +761,12 @@ impl ClipboardApp {
         let preferences = load_preferences(&storage);
         configure_fonts(&cc.egui_ctx, &preferences.font_selection());
         let (sender, events) = bounded(EVENT_CHANNEL_CAPACITY);
-        clipboard::start_watcher(sender.clone(), preferences.app_exclusion_list.clone());
+        let private_mode_flag = Arc::new(AtomicBool::new(preferences.private_mode));
+        clipboard::start_watcher(
+            sender.clone(),
+            preferences.app_exclusion_list.clone(),
+            Arc::clone(&private_mode_flag),
+        );
         let hotkey_handle = platform::start_hotkey_listener(
             sender.clone(),
             cc.egui_ctx.clone(),
@@ -762,6 +777,7 @@ impl ClipboardApp {
             cc.egui_ctx.clone(),
             !preferences.hide_tray_icon,
         );
+        let hotkey_manager = build_initial_hotkey_manager(&preferences);
         let saved_tags = storage.saved_tags().unwrap_or_default();
         let emoji_favorites = load_emoji_favorites(&storage);
         let current_database_path = storage.path().display().to_string();
@@ -851,6 +867,8 @@ impl ClipboardApp {
             recording_hotkey: None,
             image_textures: HashMap::new(),
             hotkey_handle,
+            hotkey_manager,
+            private_mode_flag,
             tray_handle,
             search_box_revealed: false,
             search_scroll_gate: SearchScrollGate {
@@ -3726,6 +3744,21 @@ fn hotkey_config_from_preferences(preferences: &AppPreferences) -> platform::Hot
         search_hotkey: preferences.search_hotkey.clone(),
         private_mode_hotkey: preferences.private_mode_hotkey.clone(),
     }
+}
+
+/// Build the in-memory hotkey registry from preferences. Only the
+/// private-mode toggle is registered here; other hotkeys are routed
+/// exclusively through the X11 listener's `HotkeyConfig`.
+fn build_initial_hotkey_manager(preferences: &AppPreferences) -> HotkeyManager {
+    let mut mgr = HotkeyManager::new();
+    if let Err(err) =
+        mgr.register("private_mode_toggle", &preferences.private_mode_hotkey)
+    {
+        eprintln!(
+            "[tiez-slim] hotkey conflict while registering private-mode toggle: {err}"
+        );
+    }
+    mgr
 }
 
 pub(crate) fn hotkey_lines(value: &str) -> Vec<String> {

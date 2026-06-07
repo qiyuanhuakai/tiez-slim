@@ -14,7 +14,10 @@ pub struct HotkeyManager {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HotkeyError {
-    ComboConflict { combo: String, existing_name: String },
+    ComboConflict {
+        combo: String,
+        existing_name: String,
+    },
 }
 
 impl std::fmt::Display for HotkeyError {
@@ -98,9 +101,7 @@ impl HotkeyManager {
     }
 
     pub fn conflict_for(&self, combo: &str) -> Option<&str> {
-        self.combo_index
-            .get(combo.trim())
-            .map(|name| name.as_str())
+        self.combo_index.get(combo.trim()).map(|name| name.as_str())
     }
 }
 

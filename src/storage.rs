@@ -93,6 +93,9 @@ impl Storage {
         &self.path
     }
 
+    pub(crate) fn conn(&self) -> &std::sync::Mutex<rusqlite::Connection> {
+        &self.conn
+    }
     fn migrate(&self) -> Result<()> {
         let conn = self.conn.lock().expect("storage mutex poisoned");
         conn.execute_batch(
