@@ -1,3 +1,8 @@
+<a name="chinese"></a>
+
+![i18n](https://img.shields.io/badge/i18n-zh--CN%20100%25%20%7C%20en--US%20100%25-blue)
+[English](#i18n) | [中文](#tiez-slim-linux)
+
 # tiez-slim-linux
 
 Rust 原生的轻量剪贴板管理器。原始上游为 [`jimuzhe/tiez-clipboard v0.3.1`](https://github.com/jimuzhe/tiez-clipboard/tree/v0.3.1)，我曾经在此基础上进行了大量修改，并以个人的方式将其完整迁移到了 Linux 上：[`qiyuanhuakai/tiez-clipboard`](https://github.com/qiyuanhuakai/tiez-clipboard)。但我受够了`Tauri`了。它看似使用性能最强的 Rust，实际上还是在运行一个高性能开销（能使我的n100增加80%占用）、无比巨大（内存占用200Mb，峰值可达600－800Mb）的 Webview。相比`electron`，它的跨平台兼容性也堪称糟糕（在 Linux 和Windows 上，同一套主题的观感是完全不同的）。所以我新开了这个项目，目标是在 Linux 上去掉 React/Tauri/WebView 所有的开销，并保留 TieZ 的紧凑视觉，我喜爱的`macos`风格与高频剪贴板工作流。
@@ -47,3 +52,39 @@ cargo run --features devtools
 ## 与旧版差异
 
 原始 `tiez-clipboard` 使用 React + Tauri 2 + WebView。`tiez-slim-linux` 对齐个人 `qiyuanhuakai/tiez-clipboard` 分支中的主界面视觉和核心数据模型，并用 Rust 原生能力补齐文本/富文本/图片/文件剪贴板、X11 全局呼出、鼠标中键、点击/键盘粘贴流程、系统托盘、边缘停靠、默认打开应用设置、彩色 emoji/符号入口、音效、字体 fallback 和可配置数据位置。
+
+<a name="i18n"></a>
+
+## 国际化 / Internationalization
+
+`tiez-slim-linux` 现已支持国际化（i18n）。当前支持以下语言：
+
+- **简体中文 (zh-CN)** — 源语言，完整覆盖
+- **English (en-US)** — 完整翻译
+
+翻译文件位于 `locales/` 目录：
+
+```
+locales/
+├── zh-CN.yml   # 源语言文件
+└── en-US.yml   # 英文翻译
+```
+
+### 如何贡献翻译
+
+欢迎贡献新的翻译或改进现有翻译：
+
+1. **添加新键**：如果修改代码时新增了 UI 字符串，先在 `locales/zh-CN.yml` 中添加，再同步到 `locales/en-US.yml`
+2. **添加新语言**：在 `locales/` 目录下创建 YAML 文件，命名格式为 `<语言代码>.yml`（如 `ja-JP.yml`），参考 `zh-CN.yml` 的键结构进行翻译
+3. **验证**：运行以下命令检查一致性：
+
+   ```bash
+   bash scripts/i18n-check.sh
+   ```
+
+### 翻译规范
+
+- 键名使用 `section.subsection.label` 命名空间格式
+- 所有字符串值使用 `"双引号"` 括起
+- 占位符使用 `{placeholder}` 格式（如 `{count}`、`{err}`）
+- en-US 文件中**不能**出现中文（CJK）字符
