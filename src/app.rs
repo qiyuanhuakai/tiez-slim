@@ -180,6 +180,7 @@ pub(crate) enum HotkeyTarget {
     Main,
     Sequential,
     RichPaste,
+    PrivateMode,
     Search,
 }
 
@@ -385,9 +386,9 @@ struct AppPreferences {
     #[serde(skip)]
     window_level_applied: bool,
     #[serde(default = "default_privacy_protection_kinds")]
-    privacy_protection_kinds: Vec<String>,
+    pub(crate) privacy_protection_kinds: Vec<String>,
     #[serde(default)]
-    privacy_protection_custom_rules: String,
+    pub(crate) privacy_protection_custom_rules: String,
     #[serde(default = "default_settings_panel_collapsed")]
     settings_panel_collapsed: Vec<bool>,
     #[serde(default = "default_color_mode")]
@@ -637,8 +638,8 @@ pub struct ClipboardApp {
     pub(crate) sound_volume: u8,
     pub(crate) paste_sound_enabled: bool,
     pub(crate) privacy_protection: bool,
-    privacy_protection_kinds: Vec<String>,
-    privacy_protection_custom_rules: String,
+    pub(crate) privacy_protection_kinds: Vec<String>,
+    pub(crate) privacy_protection_custom_rules: String,
     pub(crate) settings_panel_collapsed: Vec<bool>,
     pub(crate) main_hotkeys: String,
     pub(crate) sequential_hotkey: String,
@@ -1514,6 +1515,7 @@ impl ClipboardApp {
             sequential_hotkey: self.sequential_hotkey.clone(),
             rich_paste_hotkey: self.rich_paste_hotkey.clone(),
             search_hotkey: self.search_hotkey.clone(),
+            private_mode_hotkey: self.private_mode_hotkey.clone(),
         }
     }
 
@@ -2025,6 +2027,7 @@ impl ClipboardApp {
             sequential_hotkey: self.sequential_hotkey.clone(),
             rich_paste_hotkey: self.rich_paste_hotkey.clone(),
             search_hotkey: self.search_hotkey.clone(),
+            private_mode_hotkey: self.private_mode_hotkey.clone(),
             hide_tray_icon: self.hide_tray_icon,
             close_to_tray: self.close_to_tray,
             edge_docking: self.edge_docking,
@@ -2044,7 +2047,6 @@ impl ClipboardApp {
             language: self.language.clone(),
             app_exclusion_list: self.app_exclusion_list.clone(),
             private_mode: self.private_mode,
-            private_mode_hotkey: self.private_mode_hotkey.clone(),
             exclusion_mode: self.exclusion_mode,
             auto_backup_enabled: self.auto_backup_enabled,
             backup_retention_count: self.backup_retention_count,
@@ -2361,6 +2363,7 @@ impl ClipboardApp {
             HotkeyTarget::Sequential => self.sequential_hotkey = recorded.clone(),
             HotkeyTarget::RichPaste => self.rich_paste_hotkey = recorded.clone(),
             HotkeyTarget::Search => self.search_hotkey = recorded.clone(),
+            HotkeyTarget::PrivateMode => self.private_mode_hotkey = recorded.clone(),
         }
         self.update_hotkeys();
         self.persist_preferences();
@@ -3721,6 +3724,7 @@ fn hotkey_config_from_preferences(preferences: &AppPreferences) -> platform::Hot
         sequential_hotkey: preferences.sequential_hotkey.clone(),
         rich_paste_hotkey: preferences.rich_paste_hotkey.clone(),
         search_hotkey: preferences.search_hotkey.clone(),
+        private_mode_hotkey: preferences.private_mode_hotkey.clone(),
     }
 }
 

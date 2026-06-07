@@ -25,7 +25,10 @@ pub struct AutoBackup {
 
 impl AutoBackup {
     pub fn new(data_dir: PathBuf, retention: i32) -> Self {
-        Self { data_dir, retention }
+        Self {
+            data_dir,
+            retention,
+        }
     }
 
     fn backup_dir(&self) -> PathBuf {
@@ -64,9 +67,8 @@ impl AutoBackup {
         };
 
         let json = serde_json::to_string_pretty(&backup)?;
-        fs::write(&path, json).with_context(|| {
-            format!("Failed to write backup file: {}", path.display())
-        })?;
+        fs::write(&path, json)
+            .with_context(|| format!("Failed to write backup file: {}", path.display()))?;
 
         let _ = self.cleanup_old_backups();
 
@@ -82,9 +84,7 @@ impl AutoBackup {
         let mut entries: Vec<_> = fs::read_dir(&backup_dir)?
             .filter_map(Result::ok)
             .filter(|e| {
-                e.path()
-                    .extension()
-                    .is_some_and(|ext| ext == "json")
+                e.path().extension().is_some_and(|ext| ext == "json")
                     && e.path()
                         .file_stem()
                         .and_then(|s| s.to_str())
@@ -195,8 +195,7 @@ mod tests {
             let name = format!("clipboard-2026-01-0{i}T000000Z.json");
             let path = backup_dir.join(&name);
             fs::write(&path, "{}").unwrap();
-            let time =
-                std::time::SystemTime::now() - std::time::Duration::from_secs((5 - i) * 60);
+            let time = std::time::SystemTime::now() - std::time::Duration::from_secs((5 - i) * 60);
             filetime::set_file_mtime(&path, filetime::FileTime::from_system_time(time)).unwrap();
         }
 
