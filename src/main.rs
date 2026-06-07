@@ -27,6 +27,8 @@ const LEGACY_DEV_MODE_ENV: &str = "MYCLIPBOARD_DEV";
 fn main() -> anyhow::Result<()> {
     #[cfg(feature = "log-miss-tr")]
     env_logger::init();
+    #[cfg(feature = "log-miss-tr")]
+    crate::i18n::log_locale_info();
 
     let dev_mode = dev_mode_enabled();
     let minimized = minimized_start_enabled();

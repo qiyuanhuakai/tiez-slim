@@ -108,6 +108,12 @@ settings:
     sound: "音效"
     sound_volume: "音效音量"
     paste_sound: "粘贴音效"
+    language: "语言"
+    language_desc: "选择界面语言，选择「跟随系统」会读取 LANG / LC_MESSAGES 环境变量"
+    language_option_zh_cn: "中文(简体)"
+    language_option_en_us: "English"
+    language_option_follow_system: "跟随系统"
+    language_restart_notice: "部分平台元素(托盘菜单)需重启应用后更新"
 
   hotkey:
     title: "快捷键设置"

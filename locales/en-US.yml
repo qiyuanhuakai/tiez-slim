@@ -100,6 +100,12 @@ settings:
     sound: "Sound effects"
     sound_volume: "Sound volume"
     paste_sound: "Paste sound"
+    language: "Language"
+    language_desc: "Choose interface language. Follow system reads LANG / LC_MESSAGES environment variables."
+    language_option_zh_cn: "Chinese (Simplified)"
+    language_option_en_us: "English"
+    language_option_follow_system: "Follow System"
+    language_restart_notice: "Tray menu items require app restart to update"
   hotkey:
     title: "Hotkey Settings"
     hint: "After clicking \"Record\", press a key combination or middle mouse button; Esc to cancel. Main hotkeys can record multiple."

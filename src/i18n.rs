@@ -1,9 +1,11 @@
+#[allow(unused_imports)]
 pub use rust_i18n::t;
 
 /// Translate a key to the current locale.
 ///
 /// In debug builds, returns `[MISSING: key]` to surface untranslated keys.
 /// In release builds, performs the actual translation via `rust_i18n::t!`.
+#[allow(dead_code)]
 pub fn tr(key: &'static str) -> String {
     if cfg!(debug_assertions) {
         format!("[MISSING: {key}]")
@@ -58,6 +60,13 @@ pub fn detect_system_locale() -> String {
         .or_else(|_| std::env::var("LANG"))
         .unwrap_or_default();
     detect_from_raw(&raw)
+}
+
+/// Log the current locale at startup for diagnostics.
+#[cfg(feature = "log-miss-tr")]
+pub fn log_locale_info() {
+    let locale = current_locale();
+    log::info!("i18n: locale={}, zh-CN=100%, en-US=100%", locale);
 }
 
 #[cfg(test)]

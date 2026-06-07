@@ -1,5 +1,5 @@
 use crate::clipboard::{self, ClipboardEvent};
-use crate::emoji_data::{ALL_TWEMOJI_EMOJIS, EMOJI_GROUPS};
+use crate::emoji_data::{ALL_TWEMOJI_EMOJIS, EMOJI_GROUPS, EmojiGroup};
 use crate::model::{ClipboardEntry, ClipboardEntrySummary, ClipboardKind};
 use crate::platform;
 use crate::sound::{self, SoundEffect};
@@ -310,6 +310,33 @@ const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
 ];
+
+fn localized_group_name(group: &EmojiGroup) -> &'static str {
+    if crate::i18n::current_locale().starts_with("zh") {
+        group.name
+    } else {
+        group.source_name
+    }
+}
+
+fn localized_symbol_group_name(en_name: &str) -> String {
+    match en_name {
+        "Common" => t!("symbol.group.common").to_string(),
+        "Arrows" => t!("symbol.group.arrows").to_string(),
+        "Math" => t!("symbol.group.math").to_string(),
+        "Currency" => t!("symbol.group.currency").to_string(),
+        "Box Drawing" => t!("symbol.group.box_drawing").to_string(),
+        "Greek" => t!("symbol.group.greek").to_string(),
+        "Super/Subscript" => t!("symbol.group.super_subscript").to_string(),
+        "Technical" => t!("symbol.group.technical").to_string(),
+        "Geometric" => t!("symbol.group.geometric").to_string(),
+        "Block Elements" => t!("symbol.group.block_elements").to_string(),
+        "Punctuation" => t!("symbol.group.punctuation").to_string(),
+        "Stars/Decorative" => t!("symbol.group.stars_decorative").to_string(),
+        "Music/Games" => t!("symbol.group.music_games").to_string(),
+        _ => en_name.to_string(),
+    }
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
@@ -1072,10 +1099,10 @@ impl ClipboardApp {
                         changed = true;
                     }
                 }
-                if changed {
-                    if let Err(err) = self.persist_emoji_favorites() {
-                        self.status = err;
-                    }
+                if changed
+                    && let Err(err) = self.persist_emoji_favorites()
+                {
+                    self.status = err;
                 }
             }
             Err(err) => self.status = err,
@@ -3144,7 +3171,7 @@ impl ClipboardApp {
                     .min(EMOJI_GROUPS.len().saturating_sub(1));
                 ui.horizontal_wrapped(|ui| {
                     for (index, group) in EMOJI_GROUPS.iter().enumerate() {
-                        let label = format!("{} ({})", group.name, group.emojis.len());
+                        let label = format!("{} ({})", localized_group_name(group), group.emojis.len());
                         if filter_chip(ui, &label, self.emoji_group_index == index, &self.theme)
                             .clicked()
                         {
@@ -3163,7 +3190,7 @@ impl ClipboardApp {
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
                         egui::RichText::new(t!("emoji.page_info")
-                            .replace("{name}", &group.name)
+                            .replace("{name}", localized_group_name(group))
                             .replace("{count}", &group.emojis.len().to_string())
                             .replace("{current}", &(self.emoji_page + 1).to_string())
                             .replace("{total}", &total_pages.to_string())
@@ -3189,7 +3216,7 @@ impl ClipboardApp {
                 });
                 ui.label(
                     egui::RichText::new(t!("emoji.group_source_hint")
-                        .replace("{source}", &group.source_name)
+                        .replace("{source}", group.source_name)
                         .replace("{total}", &ALL_TWEMOJI_EMOJIS.len().to_string())
                     )
                         .color(self.theme.muted),
@@ -3275,7 +3302,7 @@ impl ClipboardApp {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 for (group, symbols) in SYMBOL_GROUPS {
-                    ui.label(egui::RichText::new(*group).size(14.0).strong());
+                    ui.label(egui::RichText::new(localized_symbol_group_name(group)).size(14.0).strong());
                     ui.separator();
                     ui.horizontal_wrapped(|ui| {
                         for symbol in *symbols {
@@ -3354,6 +3381,42 @@ impl ClipboardApp {
             let mut expanded = !prev;
             let theme = self.theme.clone();
             macos_collapsible_group(ui, t!("settings.general.title"), &mut expanded, &theme, |ui| {
+                ui.label(t!("settings.general.language"));
+                let lang_label = match self.language.as_str() {
+                    "zh-CN" => t!("settings.general.language_option_zh_cn"),
+                    "en-US" => t!("settings.general.language_option_en_us"),
+                    _ => t!("settings.general.language_option_follow_system"),
+                };
+                egui::ComboBox::from_id_source("language_selector")
+                    .selected_text(lang_label.as_ref())
+                    .show_ui(ui, |ui: &mut egui::Ui| {
+                        let options = [
+                            ("zh-CN", t!("settings.general.language_option_zh_cn")),
+                            ("en-US", t!("settings.general.language_option_en_us")),
+                            ("follow-system", t!("settings.general.language_option_follow_system")),
+                        ];
+                        for (value, label) in options {
+                            if ui.selectable_label(self.language == value, label.as_ref()).clicked() {
+                                if value == "follow-system" {
+                                    let detected = crate::i18n::detect_system_locale();
+                                    crate::i18n::set_app_locale(&detected);
+                                    self.language = detected;
+                                } else {
+                                    crate::i18n::set_app_locale(value);
+                                    self.language = value.to_string();
+                                }
+                                self.persist_preferences();
+                            }
+                        }
+                    });
+                ui.label(
+                    egui::RichText::new(t!("settings.general.language_desc"))
+                        .color(self.theme.muted),
+                );
+                ui.label(
+                    egui::RichText::new(t!("settings.general.language_restart_notice"))
+                        .color(self.theme.muted),
+                );
                 if ui.horizontal(|ui| {
                     ui.label(t!("settings.general.emoji_entry"));
                     macos_toggle(ui, &mut self.emoji_panel_enabled, &self.theme)
@@ -4621,6 +4684,7 @@ fn app_combo_row(
     searchable_combo_row(ui, label, selected, search, &options, t!("settings.default_app.search_hint"), theme)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn font_combo_row(
     ui: &mut egui::Ui,
     label: impl AsRef<str>,
@@ -6275,7 +6339,7 @@ mod tests {
         is_supported_emoji_favorite_file, list_emoji_favorite_files,
         remove_managed_emoji_favorite_file, save_emoji_favorite_bytes, save_emoji_favorite_file,
     };
-    use crate::emoji_data::{ALL_TWEMOJI_EMOJIS, EMOJI_GROUPS};
+use crate::emoji_data::{ALL_TWEMOJI_EMOJIS, EMOJI_GROUPS};
     use std::collections::BTreeSet;
     use std::fs;
     use std::path::PathBuf;
