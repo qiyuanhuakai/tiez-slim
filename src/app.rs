@@ -448,6 +448,10 @@ struct AppPreferences {
     // #6 CLI
     #[serde(default)]
     cli_socket_path: Option<String>,
+
+    // #1 Actions
+    #[serde(default = "default_builtin_actions_enabled")]
+    builtin_actions_enabled: bool,
 }
 
 fn default_privacy_protection_kinds() -> Vec<String> {
@@ -516,6 +520,10 @@ fn default_kde_connect_device_name() -> String {
     "tiez-slim-linux".to_string()
 }
 
+fn default_builtin_actions_enabled() -> bool {
+    true
+}
+
 impl Default for AppPreferences {
     fn default() -> Self {
         Self {
@@ -582,6 +590,7 @@ impl Default for AppPreferences {
             kde_connect_device_id: None,
             kde_connect_device_name: "tiez-slim-linux".to_string(),
             cli_socket_path: None,
+            builtin_actions_enabled: true,
         }
     }
 }
@@ -732,6 +741,7 @@ pub struct ClipboardApp {
     pub(crate) kde_connect_device_id: Option<String>,
     pub(crate) kde_connect_device_name: String,
     pub(crate) cli_socket_path: Option<String>,
+    pub(crate) builtin_actions_enabled: bool,
     pub(crate) font_choices: Vec<String>,
     pub(crate) primary_font_search: String,
     pub(crate) fallback_font_search: String,
@@ -927,6 +937,7 @@ impl ClipboardApp {
             kde_connect_device_id: preferences.kde_connect_device_id,
             kde_connect_device_name: preferences.kde_connect_device_name,
             cli_socket_path: preferences.cli_socket_path,
+            builtin_actions_enabled: preferences.builtin_actions_enabled,
             font_choices,
             primary_font_search: String::new(),
             fallback_font_search: String::new(),
@@ -2088,6 +2099,7 @@ impl ClipboardApp {
             kde_connect_device_id: self.kde_connect_device_id.clone(),
             kde_connect_device_name: self.kde_connect_device_name.clone(),
             cli_socket_path: self.cli_socket_path.clone(),
+            builtin_actions_enabled: self.builtin_actions_enabled,
         }
     }
 
@@ -2222,6 +2234,7 @@ impl ClipboardApp {
         self.kde_connect_device_id = preferences.kde_connect_device_id;
         self.kde_connect_device_name = preferences.kde_connect_device_name;
         self.cli_socket_path = preferences.cli_socket_path;
+        self.builtin_actions_enabled = preferences.builtin_actions_enabled;
         self.theme = resolve_theme(&self.color_mode);
         configure_fonts(ctx, &self.font_selection());
         self.configure_style(ctx);

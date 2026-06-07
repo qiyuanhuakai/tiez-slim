@@ -1,3 +1,4 @@
+use crate::actions::{Action, ActionKind};
 use crate::model::{
     ClipboardEntry, ClipboardEntrySummary, ClipboardKind, MAX_ENTRIES, RETENTION_DAYS,
 };
@@ -137,7 +138,26 @@ impl Storage {
             CREATE INDEX IF NOT EXISTS idx_clipboard_timestamp
                 ON clipboard_history(timestamp);
             CREATE INDEX IF NOT EXISTS idx_entry_tags_tag
-                ON entry_tags(tag);",
+                ON entry_tags(tag);
+
+            CREATE TABLE IF NOT EXISTS actions (
+                id INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                pattern TEXT NOT NULL,
+                command TEXT NOT NULL,
+                icon TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                auto_trigger INTEGER NOT NULL DEFAULT 0,
+                auto_trigger_primary INTEGER NOT NULL DEFAULT 0,
+                toolbar_button INTEGER NOT NULL DEFAULT 0,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                is_builtin INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                last_used_at INTEGER
+            );
+            CREATE INDEX IF NOT EXISTS idx_actions_enabled ON actions(enabled);
+            CREATE INDEX IF NOT EXISTS idx_actions_sort ON actions(sort_order);",
         )?;
         ensure_column(&conn, "clipboard_history", "html_content", "TEXT")?;
         ensure_column(&conn, "clipboard_history", "source_app_path", "TEXT")?;
@@ -569,6 +589,83 @@ impl Storage {
         Ok(stmt
             .query_map(params![id], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn save_action(&self, action: &Action) -> Result<i64> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        conn.execute(
+            "INSERT OR REPLACE INTO actions
+             (id, name, kind, pattern, command, icon, enabled,
+              auto_trigger, auto_trigger_primary, toolbar_button,
+              sort_order, is_builtin, created_at, last_used_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+            params![
+                action.id as i64,
+                action.name,
+                serde_json::to_string(&action.kind).unwrap_or_default(),
+                action.pattern,
+                action.command,
+                action.icon,
+                action.enabled as i64,
+                action.auto_trigger as i64,
+                action.auto_trigger_primary as i64,
+                action.toolbar_button as i64,
+                action.sort_order,
+                action.is_builtin as i64,
+                action.created_at,
+                action.last_used_at,
+            ],
+        )?;
+        Ok(action.id as i64)
+    }
+
+    pub fn load_actions(&self) -> Result<Vec<Action>> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, name, kind, pattern, command, icon, enabled,
+                    auto_trigger, auto_trigger_primary, toolbar_button,
+                    sort_order, is_builtin, created_at, last_used_at
+             FROM actions ORDER BY sort_order ASC, id ASC",
+        )?;
+        let actions = stmt
+            .query_map([], |row| {
+                let kind_str: String = row.get(2)?;
+                let kind: ActionKind =
+                    serde_json::from_str(&kind_str).unwrap_or(ActionKind::ShellCommand);
+                Ok(Action {
+                    id: row.get::<_, i64>(0)? as u64,
+                    name: row.get(1)?,
+                    kind,
+                    pattern: row.get(3)?,
+                    command: row.get(4)?,
+                    icon: row.get(5)?,
+                    enabled: row.get::<_, i64>(6)? != 0,
+                    auto_trigger: row.get::<_, i64>(7)? != 0,
+                    auto_trigger_primary: row.get::<_, i64>(8)? != 0,
+                    toolbar_button: row.get::<_, i64>(9)? != 0,
+                    sort_order: row.get(10)?,
+                    is_builtin: row.get::<_, i64>(11)? != 0,
+                    created_at: row.get(12)?,
+                    last_used_at: row.get(13)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(actions)
+    }
+
+    pub fn delete_action(&self, id: u64) -> Result<()> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        conn.execute("DELETE FROM actions WHERE id = ?1", params![id as i64])?;
+        Ok(())
+    }
+
+    pub fn update_action_last_used(&self, id: u64, at: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        conn.execute(
+            "UPDATE actions SET last_used_at = ?1 WHERE id = ?2",
+            params![at, id as i64],
+        )?;
+        Ok(())
     }
 }
 
@@ -1080,5 +1177,115 @@ mod tests {
 
         let missing = storage.get_entry(9_999_999).expect("get missing");
         assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_actions_crud() {
+        let storage = temp_storage();
+
+        let mut action = Action::new("Open URL", "^https?://", "xdg-open %1");
+        action.kind = ActionKind::Open;
+        action.icon = "🌐".to_string();
+        action.sort_order = 1;
+        let id = storage.save_action(&action).expect("save action");
+        assert_eq!(id, action.id as i64);
+
+        let actions = storage.load_actions().expect("load actions");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].name, "Open URL");
+        assert_eq!(actions[0].kind, ActionKind::Open);
+        assert_eq!(actions[0].icon, "🌐");
+        assert_eq!(actions[0].sort_order, 1);
+        assert!(actions[0].enabled);
+        assert!(actions[0].last_used_at.is_none());
+
+        storage
+            .update_action_last_used(action.id, 1700000000)
+            .expect("update last used");
+        let actions = storage.load_actions().expect("load after update");
+        assert_eq!(actions[0].last_used_at, Some(1700000000));
+
+        storage.delete_action(action.id).expect("delete action");
+        let actions = storage.load_actions().expect("load after delete");
+        assert!(actions.is_empty());
+    }
+
+    #[test]
+    fn test_actions_save_upsert() {
+        let storage = temp_storage();
+
+        let mut action = Action::new("Test", "pattern", "cmd %1");
+        action.sort_order = 0;
+        storage.save_action(&action).expect("first save");
+
+        action.name = "Updated Test".to_string();
+        action.sort_order = 5;
+        storage.save_action(&action).expect("upsert");
+
+        let actions = storage.load_actions().expect("load");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].name, "Updated Test");
+        assert_eq!(actions[0].sort_order, 5);
+    }
+
+    #[test]
+    fn test_actions_ordering() {
+        let storage = temp_storage();
+
+        let mut a = Action::new("B", "b", "cmd");
+        a.sort_order = 2;
+        a.id = 2;
+        let mut b = Action::new("A", "a", "cmd");
+        b.sort_order = 1;
+        b.id = 1;
+        let mut c = Action::new("C", "c", "cmd");
+        c.sort_order = 1;
+        c.id = 3;
+
+        storage.save_action(&a).expect("save a");
+        storage.save_action(&b).expect("save b");
+        storage.save_action(&c).expect("save c");
+
+        let actions = storage.load_actions().expect("load");
+        assert_eq!(actions.len(), 3);
+        assert_eq!(actions[0].name, "A");
+        assert_eq!(actions[1].name, "C");
+        assert_eq!(actions[2].name, "B");
+    }
+
+    #[test]
+    fn test_actions_migration_creates_table() {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock before epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "tiez-slim-linux-actions-migration-{}-{nanos}.db",
+            std::process::id()
+        ));
+        {
+            let conn = Connection::open(&path).expect("create old db");
+            conn.execute_batch(
+                "CREATE TABLE clipboard_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content_type TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    source_app TEXT NOT NULL,
+                    timestamp INTEGER NOT NULL,
+                    preview TEXT NOT NULL,
+                    is_pinned INTEGER NOT NULL DEFAULT 0,
+                    use_count INTEGER NOT NULL DEFAULT 0,
+                    content_hash TEXT NOT NULL UNIQUE
+                );",
+            )
+            .expect("create old schema");
+        }
+
+        let storage = Storage::open(path).expect("open migrates old schema");
+        let action = Action::new("Migrated", "test", "echo %1");
+        storage.save_action(&action).expect("save after migrate");
+        let actions = storage.load_actions().expect("load after migrate");
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].name, "Migrated");
     }
 }
