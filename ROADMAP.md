@@ -1,9 +1,11 @@
 # tiez-slim-linux 产品路线图（2026 H2）
 
 > **生成日期**：2026-06-06  
-> **版本**：v0.3（用户确认 i18n 为首要前置）  
+> **最新更新**：2026-06-07  
+> **版本**：v0.3.1（Phase 0 #8 i18n 已完成）  
 > **范围**：基于 2026-06 的功能差距分析与同步方案调研，规划 10 项优先功能的实施路径  
 > **v0.3 变更**：确认 i18n 作为 Phase 0 首要任务；详细规划按真实交付顺序重排；Phase 1 改为隐私/备份/自动化/X11/搜索并行补强；后续功能一律不得新增硬编码用户可见字符串  
+> **v0.3.1 变更**：Phase 0 #8 i18n 已交付：409 keys（zh-CN 源 + en-US 翻译，100% 覆盖），rust-i18n v4 + `%{var}` 占位符，启动时 `set_app_locale()` 修复 follow-system 语义，统一 `searchable_combo_row` 自定义下拉控件；9 commits 落地。  
 > **关联文档**：`AGENTS.md`（项目知识库）、`README.md`（用户文档）
 
 ---
@@ -14,7 +16,7 @@
 
 | 优先级 | 项 | 功能 | 价值 | 工作量 | 阶段 | 排序理由 |
 |---|---|---|---|---|---|---|
-| P0-1 | 8 | i18n（zh + en） | **极高** | L | **Phase 0** | 后续所有功能都会新增用户可见字符串；先治理可避免重复返工和文案债务 |
+| ✅ P0-1 | 8 | i18n（zh + en） | **极高** | L | **Phase 0 完成** | 已交付：409 keys 100% 覆盖，rust-i18n v4 + `%{var}`，9 commits（见 §2 #8 实际产出） |
 | P1-1 | 3 | 应用黑名单 + 私有模式 | **极高** | S | Phase 1 | 剪贴板管理器必须先让用户敢长期记录敏感环境中的内容 |
 | P1-2 | 5 | Export/Import + 自动备份 | **极高** | S | Phase 1 | 已支持置顶、标签、收藏和文件/图片历史；没有备份会削弱长期数据信任 |
 | P1-3 | 1 | 正则→命令 Actions 系统 | **极高** | M+ | Phase 1 | 从“历史查看器”升级为“生产力平台”，是竞品级差异化核心 |
@@ -113,7 +115,63 @@ graph TD
 
 ---
 
-### #8 i18n（zh + en）— **Phase 0 基础设施**
+### #8 i18n（zh + en）— **Phase 0 基础设施** ✅ 已完成（2026-06-07）
+
+> **状态**：✅ 完成（9 commits, 409 keys, 100% 覆盖）  
+> **实际工作量**：~1.5 周（含 review 修复）  
+> **v0.3.1 之前**：原文按 Phase A-E 规划交付；实际一次性集成 5 个阶段（框架 + 提取 + UI + CLI + 文档）+ 2 个用户肉眼 review 修复 + 1 个微调 + 1 个 fmt 修复
+
+#### 实际产出
+
+**Commits**（按时间顺序）:
+```
+ecbf7dd chore(i18n): integrate rust-i18n v4 framework with log-miss-tr
+07c07b9 feat(i18n): extract zh-CN + en-US translations
+dafca2a chore(i18n): add CI check + bilingual README + coverage badge
+edbc942 feat(i18n): add language dropdown UI + emoji group locale switching
+1d10801 fix(i18n): apply locale at startup to fix default English UI
+a79c0bf fix(i18n): trash icon mapping and %{var} placeholder syntax
+1ad6501 fix(i18n): default to follow-system language and unify dropdown widget
+cba4f1b style: apply cargo fmt across codebase
+7dfc04c chore: address code review feedback
+```
+
+**文件改动**:
+| 模块 | 改动 |
+|---|---|
+| `Cargo.toml` | 新增 `rust-i18n = "4"`,`log-miss-tr` feature gate |
+| `src/i18n.rs` | 新模块（100 行）:`set_app_locale` / `current_locale` / `detect_system_locale` / `tr` helper |
+| `src/app.rs` | 305 处 CJK → `t!()`；新增 `language_search: String`；默认 `follow-system`；设置面板改用 `searchable_combo_row`；`set_app_locale` 在 `ClipboardApp::new` 启动时调用 |
+| `src/clipboard.rs` | 21 处 CJK → `t!()` |
+| `src/model.rs` | 21 处 CJK → `t!()`（含 sensitive 错误消息） |
+| `src/storage.rs` | 11 处 CJK → `t!()` |
+| `src/main.rs` | 2 处 + `i18n!("locales", fallback = "en-US")` |
+| `src/platform/{mod,linux,windows}.rs` | 51 处 CJK → `t!()`（tray 菜单、错误消息） |
+| `locales/zh-CN.yml` | **409 keys 源文件**（`common.*` / `settings.*` / `status.*` / `error.*` / `history.*` / `emoji.*` / `symbol.*` / `clipboard.*` / `platform.*` / `tooltip.*` / `sound.*`） |
+| `locales/en-US.yml` | **409 keys 翻译文件**，100% 覆盖 |
+| `scripts/i18n-check.sh` | 用 `en_nonempty / total` 计算真实 coverage，1 位小数 |
+| `README.md` | 中英双语，加 `text` language tag（markdownlint MD040） |
+
+**关键设计决策**:
+- **rust-i18n v4 占位符**:用 `%{var}`（不是 `{var}`），由 4.1.0 文档明确
+- **默认语言**:`follow-system`，启动时 `detect_system_locale()` 从 LANG / LC_MESSAGES 解析
+- **持久化语义修复**:选择 "follow-system" 存储原始字符串而非立即 resolve 为具体 locale；启动时再次 resolve 以跟踪系统变更
+- **下拉控件统一**:语言选择改用 `searchable_combo_row` 自定义控件（与 paste_method / font 等一致），不用 `egui::ComboBox`
+- **缺失 key 处理**:`tr()` helper 改用 `log-miss-tr` feature 替代 debug 短路分支；前者日志到 stderr，后者会误导调用者
+- **CJK 输入**:zh-CN 中可保留少量程序内常量（如标点符号 `"："` → ASCII `":"` 是 locale 无关的标点）
+
+**验证**（commit 7dfc04c 之后）:
+- `cargo fmt --all -- --check` exit 0
+- `cargo clippy -- -D warnings` exit 0
+- `cargo test` 77/77 passed
+- `bash scripts/i18n-check.sh` 输出 `zh-CN: 409 keys, en-US: 409 non-empty, coverage: 100.0%`
+- 启动日志（5 场景全验证）:
+  - 默认 DB + LANG=zh_CN → `locale=zh-CN, zh-CN=100%, en-US=100%`
+  - DB 显式 en-US → `locale=en-US`
+  - follow-system + LANG=en_US → `locale=en-US`
+  - follow-system + LANG=zh_CN → `locale=zh-CN`
+  - 6s 渲染无 panic、无字面量 `{count}` 残留
+- Final Wave 4 个评审员全部 APPROVE（F1 Plan Compliance / F2 Code Quality / F3 Real Manual QA / F4 Scope Fidelity）
 
 #### 功能
 将所有硬编码中文（标签、按钮、消息、错误、tooltip、托盘菜单、Emoji 组名等）抽取为 i18n 键。引入 `rust-i18n` 框架，配置文件 `locales/zh-CN.yml` + `locales/en-US.yml`。新增 `language` 设置（zh-CN / en-US / follow-system）。
@@ -173,12 +231,12 @@ graph TD
 - 翻译覆盖率徽章（README 显示 `zh-CN: 100% / en-US: 85%`）
 
 #### 验收标准
-- [ ] 切换语言为 `en-US` → 所有 UI 标签、按钮、消息、tooltip 显示英文
-- [ ] 切换语言为 `zh-CN` → 全部恢复中文
-- [ ] 缺失翻译键 → 显式标记为 `[MISSING: key.path]` 而非崩溃
-- [ ] 启动日志显示当前 locale 与翻译覆盖率
-- [ ] `i18n-check.sh` 在 CI 中可运行
-- [ ] Phase 1+ 新增功能自动继承 i18n 框架（开发者只需 `tr!()` 宏）
+- [x] 切换语言为 `en-US` → 所有 UI 标签、按钮、消息、tooltip 显示英文
+- [x] 切换语言为 `zh-CN` → 全部恢复中文
+- [x] 缺失翻译键 → 显式标记为 `[MISSING: key.path]` 而非崩溃（实际通过 `log-miss-tr` feature 日志到 stderr）
+- [x] 启动日志显示当前 locale 与翻译覆盖率
+- [x] `i18n-check.sh` 在 CI 中可运行（输出 `zh-CN: 409 keys, en-US: 409 non-empty, coverage: 100.0%`）
+- [x] Phase 1+ 新增功能自动继承 i18n 框架（开发者只需 `t!()` 宏）
 
 #### 风险与权衡
 | 风险 | 缓解 |
@@ -1016,48 +1074,51 @@ graph TD
 
 ### 总工作量汇总
 
-| 阶段 | 项 | 工作量（人天） | 累计 |
-|---|---|---|---|
-| **Phase 0** | #8 i18n（zh + en） | 9 | 9 |
-| **Phase 1** | #3 黑名单 + 私有模式 | 3 | 12 |
-| | #5 Export/Import + 备份 | 3 | 15 |
-| | #1 Actions (Option D) | 8 | 23 |
-| | #2 Primary Selection (XFixes) | 5 | 28 |
-| | #10 fuzzy search | 3 | 31 |
-| **Phase 2** | #4 KDE Connect | 6 | 37 |
-| | #7 DB 加密 | 6 | 43 |
-| | #6 CLI 配套 | 5 | 48 |
-| **Phase 3** | #9 Snippets（模式镜像 saved_tags） | 5 | 53 |
+| 阶段 | 状态 | 项 | 工作量（人天） | 累计 |
+|---|---|---|---|---|
+| **Phase 0** | ✅ 已完成 | #8 i18n（zh + en） | 9 | 9 |
+| **Phase 1** | 📋 待开始 | #3 黑名单 + 私有模式 | 3 | 12 |
+| | | #5 Export/Import + 备份 | 3 | 15 |
+| | | #1 Actions (Option D) | 8 | 23 |
+| | | #2 Primary Selection (XFixes) | 5 | 28 |
+| | | #10 fuzzy search | 3 | 31 |
+| **Phase 2** | 📋 待开始 | #4 KDE Connect | 6 | 37 |
+| | | #7 DB 加密 | 6 | 43 |
+| | | #6 CLI 配套 | 5 | 48 |
+| **Phase 3** | 📋 待开始 | #9 Snippets（模式镜像 saved_tags） | 5 | 53 |
 
-**总计**：约 **53 人天** ≈ **10.5 周全职**（总量不变；v0.3 主要调整为 i18n 后先补隐私/备份，再做自动化/X11/搜索）
+**总计**：约 **53 人天** ≈ **10.5 周全职**（v0.3 主要调整为 i18n 后先补隐私/备份，再做自动化/X11/搜索）  
+**已完成**：9 人天（Phase 0 i18n）  
+**剩余**：44 人天（Phase 1-3）
 
 ### 建议时间表（单人串行）
 
 ```
-2026-07 ──── 2026-08 ──── 2026-09 ──── 2026-10 ──── 2026-11
-   │            │            │            │            │
-   ├─ Phase 0 ─┤            │            │            │
-   │ 1.5 周     │            │            │            │
-   │            ├─ Phase 1 ─┤            │            │
-   │            │   5 周     │            │            │
-   │            │            ├─ Phase 2 ─┤            │
-   │            │            │   4 周     │            │
-   │            │            │            ├─ Phase 3 ─┤│
-   │            │            │            │  4 周      │
+2026-06 ──── 2026-07 ──── 2026-08 ──── 2026-09 ──── 2026-10 ──── 2026-11
+   │            │            │            │            │            │
+   │✅Phase 0 ─┤            │            │            │            │
+   │ 1.5 周     │            │            │            │            │
+   │            ├─ Phase 1 ─┤            │            │            │
+   │            │   5 周     │            │            │            │
+   │            │            ├─ Phase 2 ─┤            │            │
+   │            │            │   4 周     │            │            │
+   │            │            │            ├─ Phase 3 ─┤            │
+   │            │            │            │  4 周      │            │
 ```
 
-**目标**：**2026-11 中**完成全部 10 项，发布 v0.4.0
+**实际进度（截至 2026-06-07）**：Phase 0 已完成，提前进入 Phase 1 准备  
+**目标**：**2026-11 中**完成全部 10 项，发布 v0.4.0（计划不变）
 
 ### 关键里程碑
 
-| 里程碑 | 日期 | 完成项 | 验证方式 |
-|---|---|---|---|
-| **M0**: i18n 上线 | 2026-07-15 | #8 | 切换语言 → 全 UI 英文/中文；缺失 key 检查可运行 |
-| **M1**: 信任底座上线 | 2026-08-05 | #3, #5 | KeePassXC 黑名单不记录；退出自动备份；导出/导入可还原 |
-| **M2**: 核心工作流完成 | 2026-08-31 | #1, #2, #10 | URL→动作执行；PRIMARY 捕获；模糊搜索高亮与延迟达标 |
-| **M3**: 扩展能力完成 | 2026-09-30 | #4, #7, #6 | Android↔PC 同步实测；敏感条目加密；CLI 完整子命令 |
-| **M4**: 差异化完成 | 2026-11-15 | #9 | Snippet 热键插入；release candidate + 完整 release notes |
-| **Release v0.4.0** | **2026-11-30** | 全部 | 打包发布 |
+| 里程碑 | 状态 | 日期 | 完成项 | 验证方式 |
+|---|---|---|---|---|
+| **M0**: i18n 上线 | ✅ 已完成 | 2026-06-07（提前 38 天） | #8 | 切换语言 → 全 UI 英文/中文；缺失 key 检查可运行；409 keys 100% 覆盖 |
+| **M1**: 信任底座上线 | 📋 待开始 | 2026-08-05 | #3, #5 | KeePassXC 黑名单不记录；退出自动备份；导出/导入可还原 |
+| **M2**: 核心工作流完成 | 📋 待开始 | 2026-08-31 | #1, #2, #10 | URL→动作执行；PRIMARY 捕获；模糊搜索高亮与延迟达标 |
+| **M3**: 扩展能力完成 | 📋 待开始 | 2026-09-30 | #4, #7, #6 | Android↔PC 同步实测；敏感条目加密；CLI 完整子命令 |
+| **M4**: 差异化完成 | 📋 待开始 | 2026-11-15 | #9 | Snippet 热键插入；release candidate + 完整 release notes |
+| **Release v0.4.0** | 📋 待开始 | **2026-11-30** | 全部 | 打包发布 |
 
 ---
 
@@ -1116,6 +1177,9 @@ graph TD
 | **2026-06-06** | **Primary Selection 实现：XFixes 事件订阅** | 零 CPU 开销，事件驱动；现有 x11rb 集成简单 |
 | **2026-06-06** | **右键键位迁移：右键=菜单，Shift+右键=原富文本粘贴** | 工具栏 ⚡ 按钮 + context menu 需要腾出右键键位 |
 | **2026-06-06** | **路线图 v0.3 重排：用户确认先实现 i18n** | 先建立语言基础设施，后续隐私/备份/Actions/Primary/同步/CLI/Snippets 全部按 locale key 接入 |
+| **2026-06-07** | **路线图 v0.3.1：Phase 0 #8 i18n 交付完成** | 409 keys（zh-CN 源 + en-US 翻译 100% 覆盖），rust-i18n v4 + `%{var}` 占位符语法，启动时 `set_app_locale()` 修复 follow-system 持久化语义，自定义 `searchable_combo_row` 统一下拉；9 commits；F1-F4 final wave 全部 APPROVE；M0 提前 38 天达成 |
+| **2026-06-07** | **i18n 关键设计决策**：默认语言从 zh-CN 改为 follow-system | 用户微调要求 + 启动时 `detect_system_locale()` 正确处理，避免锁定特定 locale |
+| **2026-06-07** | **i18n 关键设计决策**：rust-i18n v4 占位符用 `%{var}`（不是 `{var}`） | 由 4.1.0 文档明确；v0.3 实施时误用 `{var}` 致 101 个 / 文件不替换，用户肉眼发现后修复 |
 | TBD | 待用户确认 Q2-Q10 | — |
 
 ---
