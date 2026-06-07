@@ -1,11 +1,18 @@
+mod actions;
 mod app;
 mod clipboard;
 mod emoji_data;
+mod encryption;
 mod i18n;
+mod ipc;
 mod model;
 mod platform;
+mod search;
+mod snippets;
 mod sound;
 mod storage;
+mod storage_io;
+mod sync;
 mod ui;
 
 rust_i18n::i18n!("locales", fallback = "en-US");
