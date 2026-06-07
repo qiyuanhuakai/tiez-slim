@@ -1,3 +1,5 @@
+use rust_i18n::t;
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "windows")]
@@ -6,11 +8,11 @@ mod windows;
 #[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct PlatformCapabilities {
-    pub active_window: &'static str,
-    pub window_management: &'static str,
-    pub global_hotkey: &'static str,
-    pub tray: &'static str,
-    pub rich_clipboard: &'static str,
+    pub active_window: String,
+    pub window_management: String,
+    pub global_hotkey: String,
+    pub tray: String,
+    pub rich_clipboard: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -102,7 +104,7 @@ impl HotkeyUpdateHandle {
     pub fn update(&self, config: HotkeyConfig) -> Result<(), String> {
         self.sender
             .send(config)
-            .map_err(|err| format!("更新快捷键失败: {err}"))
+            .map_err(|err| t!("platform.hotkey_update_failed", err => err).to_string())
     }
 }
 
@@ -149,19 +151,19 @@ pub fn active_app_name() -> String {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-pub fn platform_note() -> &'static str {
-    "当前平台使用通用实现。"
+pub fn platform_note() -> String {
+    t!("platform.note.generic")
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 #[allow(dead_code)]
 pub fn capabilities() -> PlatformCapabilities {
     PlatformCapabilities {
-        active_window: "通用占位",
-        window_management: "egui viewport 基础窗口控制",
-        global_hotkey: "未接入",
-        tray: "未接入",
-        rich_clipboard: "文本优先",
+        active_window: t!("platform.capability.active_window_generic"),
+        window_management: t!("platform.capability.window_mgmt_generic"),
+        global_hotkey: t!("platform.capability.hotkey_generic"),
+        tray: t!("platform.capability.tray_generic"),
+        rich_clipboard: t!("platform.capability.rich_clipboard_generic"),
     }
 }
 
@@ -192,12 +194,12 @@ pub fn autostart_enabled() -> Result<bool, String> {
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn set_autostart(_enabled: bool) -> Result<(), String> {
-    Err("当前平台暂不支持开机启动".to_string())
+    Err(t!("platform.autostart_not_supported"))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]
 pub fn simulate_paste(_prefer_formatted: bool, _method: PasteMethod) -> Result<(), String> {
-    Err("当前平台暂未接入模拟粘贴".to_string())
+    Err(t!("platform.paste_not_supported"))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows")))]

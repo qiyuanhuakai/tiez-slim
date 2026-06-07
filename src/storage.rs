@@ -4,6 +4,7 @@ use crate::model::{
 use anyhow::{Context, Result};
 use chrono::{Duration, Local};
 use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+use rust_i18n::t;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -43,25 +44,25 @@ impl Storage {
 
     pub fn write_redirect_path(path: PathBuf) -> Result<()> {
         let Some(parent) = path.parent() else {
-            anyhow::bail!("数据库路径必须包含目录");
+            anyhow::bail!("{}", t!("storage_error.db_path_required"));
         };
         std::fs::create_dir_all(parent)
-            .with_context(|| format!("创建数据库目录失败: {}", parent.display()))?;
+            .with_context(|| t!("storage_error.create_db_dir_failed", path = parent.display()))?;
         let config_dir = dirs::data_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join(APP_DATA_DIR);
         std::fs::create_dir_all(&config_dir)
-            .with_context(|| format!("创建配置目录失败: {}", config_dir.display()))?;
+            .with_context(|| t!("storage_error.create_config_dir_failed", path = config_dir.display()))?;
         std::fs::write(config_dir.join("datapath.txt"), path.display().to_string())
-            .context("保存数据库路径配置失败")
+            .context(t!("storage_error.save_path_config_failed"))
     }
 
     pub fn open(path: PathBuf) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
-                .with_context(|| format!("创建数据目录失败: {}", parent.display()))?;
+                .with_context(|| t!("storage_error.create_data_dir_failed", path = parent.display()))?;
         }
-        let conn = Connection::open(&path).context("连接 SQLite 失败")?;
+        let conn = Connection::open(&path).context(t!("storage_error.connect_sqlite_failed"))?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.pragma_update(None, "cache_size", -8_000)?;

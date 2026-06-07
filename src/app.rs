@@ -8,8 +8,10 @@ use crate::ui::MacosTokens;
 use crate::ui::widgets::{macos_collapsible_group, macos_range_slider, macos_toggle};
 use crossbeam_channel::{Receiver, Sender, bounded};
 use eframe::egui;
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::fs;
@@ -49,9 +51,9 @@ const EVENT_CHANNEL_CAPACITY: usize = 100;
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(6 * 3600);
 const ACTIVITY_REPAINT_WINDOW: Duration = Duration::from_millis(500);
 const AUTO_FONT_VALUE: &str = "";
-const AUTO_PRIMARY_FONT_LABEL: &str = "自动（CJK 优先）";
-const AUTO_FALLBACK_FONT_LABEL: &str = "自动（Unifont 优先）";
-const VENDORED_UNIFONT_LABEL: &str = "GNU Unifont（内置）";
+const AUTO_PRIMARY_FONT_LABEL: &str = "Auto (CJK first)";
+const AUTO_FALLBACK_FONT_LABEL: &str = "Auto (Unifont first)";
+const VENDORED_UNIFONT_LABEL: &str = "GNU Unifont (built-in)";
 const UNIFONT_FAMILY_CANDIDATES: &[&str] = &[
     "GNU Unifont",
     "Unifont",
@@ -196,7 +198,7 @@ enum CardAction {
 
 const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
     (
-        "常用",
+        "Common",
         &[
             "•", "·", "…", "—", "–", "※", "§", "¶", "†", "‡", "©", "®", "™", "℠", "°", "′", "″",
             "№", "✓", "✔", "✗", "✘", "✕", "✦", "✧", "★", "☆", "◇", "◆", "○", "●", "□", "■", "△",
@@ -204,7 +206,7 @@ const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "箭头",
+        "Arrows",
         &[
             "←", "↑", "→", "↓", "↔", "↕", "↖", "↗", "↘", "↙", "⇐", "⇑", "⇒", "⇓", "⇔", "⇧", "⇩",
             "⇦", "⇨", "⇪", "⟵", "⟶", "⟷", "⟸", "⟹", "⟺", "⟻", "⟼", "⤴", "⤵", "↩", "↪", "↫", "↬",
@@ -214,7 +216,7 @@ const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "数学",
+        "Math",
         &[
             "±", "×", "÷", "≈", "≠", "≤", "≥", "∞", "∑", "∏", "√", "∫", "∂", "∆", "∇", "∈", "∉",
             "∋", "∌", "∅", "∁", "∩", "∪", "⊂", "⊃", "⊄", "⊅", "⊆", "⊇", "⊕", "⊖", "⊗", "⊘", "⊙",
@@ -224,7 +226,7 @@ const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "货币",
+        "Currency",
         &[
             "¥", "$", "€", "£", "₩", "₹", "₽", "₺", "₫", "₴", "₿", "¢", "¤", "₠", "₡", "₢", "₣",
             "₤", "₥", "₦", "₧", "₨", "₩", "₪", "₫", "€", "₭", "₮", "₯", "₰", "₱", "₲", "₳", "₵",
@@ -232,7 +234,7 @@ const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "框线",
+        "Box Drawing",
         &[
             "─", "━", "│", "┃", "┌", "┐", "└", "┘", "├", "┤", "┬", "┴", "┼", "╭", "╮", "╰", "╯",
             "═", "║", "╔", "╗", "╚", "╝", "╬", "┏", "┓", "┗", "┛", "┣", "┫", "┳", "┻", "╋", "┄",
@@ -241,7 +243,7 @@ const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "希腊",
+        "Greek",
         &[
             "Α", "Β", "Γ", "Δ", "Ε", "Ζ", "Η", "Θ", "Ι", "Κ", "Λ", "Μ", "Ν", "Ξ", "Ο", "Π", "Ρ",
             "Σ", "Τ", "Υ", "Φ", "Χ", "Ψ", "Ω", "α", "β", "γ", "δ", "ε", "ζ", "η", "θ", "ι", "κ",
@@ -250,7 +252,7 @@ const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "上标/下标",
+        "Super/Subscript",
         &[
             "⁰", "¹", "²", "³", "⁴", "⁵", "⁶", "⁷", "⁸", "⁹", "⁺", "⁻", "⁼", "⁽", "⁾", "ⁿ", "₀",
             "₁", "₂", "₃", "₄", "₅", "₆", "₇", "₈", "₉", "₊", "₋", "₌", "₍", "₎", "ₐ", "ₑ", "ₒ",
@@ -259,7 +261,7 @@ const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "技术",
+        "Technical",
         &[
             "⌘", "⌥", "⌃", "⇧", "⎋", "⌫", "⌦", "⏎", "⌤", "⌧", "⌨", "␣", "␡", "⏏", "⏭", "⏮", "⏯",
             "⏵", "⏸", "⏹", "⏺", "⏱", "⏲", "⏰", "⌚", "⌛", "⎈", "⎇", "⎉", "⎊", "⎌", "⎍", "⎔", "⎗",
@@ -267,7 +269,7 @@ const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "几何",
+        "Geometric",
         &[
             "■", "□", "▢", "▣", "▤", "▥", "▦", "▧", "▨", "▩", "▪", "▫", "▬", "▭", "▮", "▯", "▰",
             "▱", "▲", "△", "▴", "▵", "▶", "▷", "▸", "▹", "►", "▻", "▼", "▽", "▾", "▿", "◀", "◁",
@@ -276,23 +278,23 @@ const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "块元素",
+        "Block Elements",
         &[
             "▀", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█", "▉", "▊", "▋", "▌", "▍", "▎", "▏", "▐",
             "░", "▒", "▓", "▔", "▕", "▖", "▗", "▘", "▙", "▚", "▛", "▜", "▝", "▞", "▟",
         ],
     ),
     (
-        "标点/括号",
+        "Punctuation",
         &[
             "。", "、", "「", "」", "『", "』", "《", "》", "〈", "〉", "〔", "〕", "【", "】",
-            "〖", "〗", "〘", "〙", "〚", "〛", "〝", "〞", "“", "”", "‘", "’", "‚", "„", "‹", "›",
+            "〖", "〗", "〘", "〙", "〚", "〛", "〝", "〞", "\u{201c}", "\u{201d}", "\u{2018}", "\u{2019}", "‚", "„", "‹", "›",
             "«", "»", "¿", "¡", "‽", "⁂", "⁇", "⁈", "⁉", "⸮", "﹁", "﹂", "﹃", "﹄", "﹏", "﹋",
             "﹌",
         ],
     ),
     (
-        "星标/装饰",
+        "Stars/Decorative",
         &[
             "✁", "✂", "✃", "✄", "✆", "✇", "✈", "✉", "✌", "✍", "✎", "✏", "✐", "✑", "✒", "✓", "✔",
             "✕", "✖", "✗", "✘", "✙", "✚", "✛", "✜", "✝", "✞", "✟", "✠", "✡", "✢", "✣", "✤", "✥",
@@ -301,7 +303,7 @@ const SYMBOL_GROUPS: &[(&str, &[&str])] = &[
         ],
     ),
     (
-        "音乐/棋牌",
+        "Music/Games",
         &[
             "♩", "♪", "♫", "♬", "♭", "♮", "♯", "♔", "♕", "♖", "♗", "♘", "♙", "♚", "♛", "♜", "♝",
             "♞", "♟", "♠", "♡", "♢", "♣", "♤", "♥", "♦", "♧", "♨", "♲", "♻", "♾",
@@ -791,7 +793,7 @@ impl ClipboardApp {
                 self.image_textures.retain(|id, _| visible_ids.contains(id));
                 self.ensure_selection();
             }
-            Err(err) => self.status = format!("读取历史失败: {err}"),
+            Err(err) => self.status = format!("{}: {err}", t!("history.load_failed")),
         }
     }
 
@@ -841,14 +843,14 @@ impl ClipboardApp {
                     if matches!(entry.kind, ClipboardKind::File | ClipboardKind::Video)
                         && !self.capture_files
                     {
-                        self.status = "已忽略文件剪贴板：设置中已关闭捕获文件".to_string();
+                        self.status = t!("status.clipboard_ignored_file").to_string();
                         continue;
                     }
                     if matches!(entry.kind, ClipboardKind::Image)
                         && entry.is_external
                         && !self.capture_files
                     {
-                        self.status = "已忽略图片文件剪贴板：设置中已关闭捕获文件".to_string();
+                        self.status = t!("status.clipboard_ignored_image_file").to_string();
                         continue;
                     }
                     if matches!(entry.kind, ClipboardKind::RichText) && !self.capture_rich_text {
@@ -864,7 +866,7 @@ impl ClipboardApp {
                             match result {
                                 Ok(_) => {
                                     self.saved_count += 1;
-                                    self.status = "已按纯文本捕获富文本剪贴板".to_string();
+                                    self.status = t!("status.captured_rich_as_text").to_string();
                                     if self.should_play_copy_sound() {
                                         self.play_sound(SoundEffect::Copy);
                                     }
@@ -872,7 +874,7 @@ impl ClipboardApp {
                                 }
                                 Err(err) => {
                                     self.error_count += 1;
-                                    self.status = format!("保存富文本纯文本回退失败: {err}");
+                                    self.status = format!("{}: {err}", t!("status.capture_rich_fallback_failed"));
                                 }
                             }
                         }
@@ -886,7 +888,7 @@ impl ClipboardApp {
                     match result {
                         Ok(_) => {
                             self.saved_count += 1;
-                            self.status = format!("已捕获：{}", entry.preview);
+                            self.status = format!("{}: {}", t!("status.captured"), entry.preview);
                             if self.should_play_copy_sound() {
                                 self.play_sound(SoundEffect::Copy);
                             }
@@ -894,13 +896,13 @@ impl ClipboardApp {
                         }
                         Err(err) => {
                             self.error_count += 1;
-                            self.status = format!("保存剪贴板失败: {err}");
+                            self.status = format!("{}: {err}", t!("status.capture_save_failed"));
                         }
                     }
                 }
                 ClipboardEvent::Error(err) => {
                     self.error_count += 1;
-                    self.status = format!("剪贴板暂不可用: {err}");
+                    self.status = format!("{}: {err}", t!("status.clipboard_unavailable"));
                 }
                 ClipboardEvent::Status(message) => self.status = message,
                 ClipboardEvent::ToggleWindow => self.toggle_window_visibility(ctx),
@@ -926,7 +928,7 @@ impl ClipboardApp {
         paste_with_format: bool,
     ) {
         let Some(entry) = self.get_full_entry(summary.id) else {
-            self.status = "无法加载完整内容".to_string();
+            self.status = t!("error.open_content_empty").to_string();
             return;
         };
         self.last_activity = Instant::now();
@@ -941,7 +943,7 @@ impl ClipboardApp {
                     ctx,
                     Some(entry.id),
                     prefer_formatted,
-                    "已写入剪贴板，准备粘贴",
+                    t!("status.clipboard_written"),
                 );
             }
             Err(err) => self.status = err,
@@ -959,7 +961,7 @@ impl ClipboardApp {
     fn paste_file_favorite(&mut self, ctx: &egui::Context, path: &str) {
         self.last_activity = Instant::now();
         match clipboard::set_file_list(path) {
-            Ok(()) => self.schedule_pending_paste(ctx, None, true, "已写入收藏表情包，准备粘贴"),
+            Ok(()) => self.schedule_pending_paste(ctx, None, true, t!("status.clipboard_written_favorite")),
             Err(err) => self.status = err,
         }
     }
@@ -990,7 +992,7 @@ impl ClipboardApp {
             }
         }
         match self.persist_emoji_favorites() {
-            Ok(()) => self.status = format!("已添加 {added} 个表情包收藏"),
+            Ok(()) => self.status = format!("{}: {}", t!("emoji.added_count"), added),
             Err(err) => self.status = err,
         }
     }
@@ -1007,7 +1009,7 @@ impl ClipboardApp {
                     self.emoji_favorites.push(value);
                 }
                 match self.persist_emoji_favorites() {
-                    Ok(()) => self.status = "已添加拖放表情包收藏".to_string(),
+                    Ok(()) => self.status = t!("emoji.added_drop").to_string(),
                     Err(err) => self.status = err,
                 }
             }
@@ -1029,17 +1031,17 @@ impl ClipboardApp {
             return;
         }
         match self.persist_emoji_favorites() {
-            Ok(()) => self.status = "已移除表情包收藏".to_string(),
+            Ok(()) => self.status = t!("emoji.removed").to_string(),
             Err(err) => self.status = err,
         }
     }
 
     fn persist_emoji_favorites(&self) -> Result<(), String> {
         let value = serde_json::to_string(&self.emoji_favorites)
-            .map_err(|err| format!("序列化表情包收藏失败: {err}"))?;
+            .map_err(|err| format!("{}: {err}", t!("emoji.serialize_failed")))?;
         self.storage
             .set_setting(EMOJI_FAVORITES_KEY, &value)
-            .map_err(|err| format!("保存表情包收藏失败: {err}"))
+            .map_err(|err| format!("{}: {err}", t!("emoji.save_favorite_failed")))
     }
 
     fn emoji_favorites_dir(&self) -> PathBuf {
@@ -1111,7 +1113,7 @@ impl ClipboardApp {
         ctx: &egui::Context,
         entry_id: Option<i64>,
         prefer_formatted: bool,
-        status: &str,
+        status: impl AsRef<str>,
     ) {
         self.pending_paste = Some(PendingPaste {
             entry_id,
@@ -1126,7 +1128,7 @@ impl ClipboardApp {
         ));
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-        self.status = status.to_string();
+        self.status = status.as_ref().to_string();
         ctx.request_repaint_after(Duration::from_millis(130));
     }
 
@@ -1159,14 +1161,14 @@ impl ClipboardApp {
                     Ok(())
                 };
                 if let Err(err) = result {
-                    self.status = format!("已粘贴，但更新历史失败: {err}");
+                    self.status = format!("{}: {err}", t!("status.paste_history_update_failed"));
                 } else {
                     self.status = if pending.entry_id.is_none() {
-                        "已粘贴到目标窗口".to_string()
+                        t!("status.pasted_to_target").to_string()
                     } else if self.delete_after_paste {
-                        "已粘贴并删除该记录".to_string()
+                        t!("status.pasted_and_deleted").to_string()
                     } else {
-                        "已粘贴到目标窗口".to_string()
+                        t!("status.pasted_to_target").to_string()
                     };
                 }
                 if pending.restore_pinned_window {
@@ -1192,7 +1194,7 @@ impl ClipboardApp {
             self.select_entry(summary.id);
             self.paste_entry(ctx, &summary, true);
         } else {
-            self.status = "没有可富文本粘贴的历史".to_string();
+            self.status = t!("status.no_rich_paste_history").to_string();
         }
     }
 
@@ -1201,7 +1203,7 @@ impl ClipboardApp {
             .selected_entry()
             .or_else(|| self.entries.first().cloned())
         else {
-            self.status = "没有可顺序粘贴的历史".to_string();
+            self.status = t!("status.no_sequential_paste_history").to_string();
             return;
         };
         self.select_entry(summary.id);
@@ -1220,7 +1222,7 @@ impl ClipboardApp {
         self.current_page = AppPage::Clipboard;
         self.search_box_revealed = true;
         self.focus_search = true;
-        self.status = "已通过快捷键聚焦搜索".to_string();
+        self.status = t!("status.search_focused").to_string();
         ctx.request_repaint();
     }
 
@@ -1244,7 +1246,7 @@ impl ClipboardApp {
     fn open_settings_from_tray(&mut self, ctx: &egui::Context) {
         self.show_window(ctx, true);
         self.current_page = AppPage::Settings;
-        self.status = "已从托盘打开设置".to_string();
+        self.status = t!("status.settings_from_tray").to_string();
         ctx.request_repaint();
     }
 
@@ -1259,13 +1261,13 @@ impl ClipboardApp {
             if let Some(handle) = self.tray_handle.take() {
                 handle.stop();
             }
-            self.status = "系统托盘已隐藏".to_string();
+            self.status = t!("error.system_tray_hidden").to_string();
         } else if self.tray_handle.is_none() {
             self.tray_handle = platform::start_tray(self.event_sender.clone(), ctx.clone(), true);
             self.status = if self.tray_handle.is_some() {
-                "系统托盘已启用".to_string()
+                t!("error.system_tray_enabled").to_string()
             } else {
-                "当前平台不支持系统托盘".to_string()
+                t!("error.system_tray_unsupported").to_string()
             };
         }
     }
@@ -1293,7 +1295,7 @@ impl ClipboardApp {
         self.pending_edge_hide = None;
         ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-        self.status = "已隐藏到托盘".to_string();
+        self.status = t!("status.hidden_to_tray").to_string();
     }
 
     fn hotkey_config(&self) -> platform::HotkeyConfig {
@@ -1482,7 +1484,7 @@ impl ClipboardApp {
         ctx.send_viewport_cmd(egui::ViewportCommand::MinInnerSize(egui::vec2(1.0, 1.0)));
         ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(hidden_size));
         ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(hidden_pos));
-        self.status = "正在贴边隐藏…".to_string();
+        self.status = t!("status.edge_hiding").to_string();
     }
 
     fn process_pending_edge_hide(&mut self, ctx: &egui::Context) {
@@ -1502,12 +1504,12 @@ impl ClipboardApp {
             self.edge_hidden = true;
             self.edge_hide_armed = false;
             self.last_edge_transition = Instant::now();
-            self.status = "已贴边隐藏，鼠标靠近屏幕边缘可展开".to_string();
+            self.status = t!("status.edge_hidden").to_string();
             return;
         }
         if pending.requested_at.elapsed() > Duration::from_secs(2) || pending.attempts >= 8 {
             self.restore_from_pending_edge_hide(ctx, pending);
-            self.status = "贴边隐藏未完成：窗口管理器可能阻止窗口调整为边条".to_string();
+            self.status = t!("status.edge_hide_failed").to_string();
             return;
         }
         if pending.last_attempt.elapsed() >= Duration::from_millis(150) {
@@ -1649,12 +1651,12 @@ impl ClipboardApp {
         if focus {
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
         }
-        self.status = "已展开贴边窗口".to_string();
+        self.status = t!("status.edge_revealed").to_string();
     }
 
     fn open_entry(&mut self, summary: &ClipboardEntrySummary) {
         let Some(entry) = self.get_full_entry(summary.id) else {
-            self.status = format!("无法加载完整内容 (id={})", summary.id);
+            self.status = format!("{} (id={})", t!("error.open_content_empty_id"), summary.id);
             return;
         };
         self.last_activity = Instant::now();
@@ -1669,9 +1671,9 @@ impl ClipboardApp {
                 match result {
                     Ok(()) => {
                         let _ = self.storage.increment_use_count(entry.id);
-                        self.status = format!("已打开：{target}");
+                        self.status = format!("{}: {target}", t!("error.open_target"));
                     }
-                    Err(err) => self.status = format!("打开失败: {err}"),
+                    Err(err) => self.status = format!("{}: {err}", t!("error.open_entry_failed")),
                 }
             }
             Err(err) => self.status = err,
@@ -1704,7 +1706,7 @@ impl ClipboardApp {
                 .map(str::trim)
                 .find(|line| !line.is_empty())
                 .map(ToOwned::to_owned)
-                .ok_or_else(|| "文件条目为空".to_string()),
+                .ok_or_else(|| t!("error.file_entry_empty").to_string()),
             ClipboardKind::Image if entry.content.starts_with("data:image/") => {
                 write_data_url_to_temp_file(&entry.content, "png")
                     .map(|path| path.display().to_string())
@@ -1715,7 +1717,7 @@ impl ClipboardApp {
                 .map(str::trim)
                 .find(|line| !line.is_empty())
                 .map(ToOwned::to_owned)
-                .ok_or_else(|| "图片条目为空".to_string()),
+                .ok_or_else(|| t!("error.image_entry_empty").to_string()),
             ClipboardKind::Code => write_text_to_temp_file(&entry.content, "txt")
                 .map(|path| path.display().to_string()),
             ClipboardKind::Text | ClipboardKind::RichText => {
@@ -1729,7 +1731,7 @@ impl ClipboardApp {
         if !self.window_visible || self.edge_hidden {
             self.show_window(ctx, true);
             self.current_page = AppPage::Clipboard;
-            self.status = "Win+V：已呼出剪贴板".to_string();
+            self.status = t!("status.win_v_show").to_string();
         } else {
             self.window_visible = false;
             self.edge_hidden = false;
@@ -1739,7 +1741,7 @@ impl ClipboardApp {
             self.pending_edge_hide = None;
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-            self.status = "Win+V：已隐藏剪贴板".to_string();
+            self.status = t!("status.win_v_hide").to_string();
         }
         ctx.request_repaint();
     }
@@ -1758,11 +1760,11 @@ impl ClipboardApp {
         if let Some(id) = self.selected_id {
             match self.storage.delete(id) {
                 Ok(()) => {
-                    self.status = "已删除选中记录".to_string();
+                    self.status = t!("history.deleted_selected").to_string();
                     self.selected_id = None;
                     self.refresh_entries();
                 }
-                Err(err) => self.status = format!("删除失败: {err}"),
+                Err(err) => self.status = format!("{}: {err}", t!("history.delete_failed")),
             }
         }
     }
@@ -1771,7 +1773,7 @@ impl ClipboardApp {
         if let Some(id) = self.selected_id {
             match self.storage.toggle_pin(id) {
                 Ok(()) => self.refresh_entries(),
-                Err(err) => self.status = format!("置顶失败: {err}"),
+                Err(err) => self.status = format!("{}: {err}", t!("history.pin_failed")),
             }
         }
     }
@@ -1845,7 +1847,8 @@ impl ClipboardApp {
             && load_system_font_family(&self.primary_font).is_none()
         {
             return Some(format!(
-                "主要字体未找到：{}，已回退到自动字体",
+                "{}: {}",
+                t!("status.font_primary_not_found"),
                 self.primary_font
             ));
         }
@@ -1853,7 +1856,7 @@ impl ClipboardApp {
             && self.fallback_font != VENDORED_UNIFONT_LABEL
             && load_system_font_family(&self.fallback_font).is_none()
         {
-            return Some(format!("备用字体未找到：{}", self.fallback_font));
+            return Some(format!("{}: {}", t!("status.font_fallback_not_found"), self.fallback_font));
         }
         None
     }
@@ -1870,19 +1873,19 @@ impl ClipboardApp {
     fn persist_preferences(&mut self) {
         match serde_json::to_string(&self.preferences()) {
             Ok(payload) => match self.storage.set_setting(PREFERENCES_KEY, &payload) {
-                Ok(()) => self.status = "设置已保存".to_string(),
-                Err(err) => self.status = format!("保存设置失败: {err}"),
+                Ok(()) => self.status = t!("settings.saved").to_string(),
+                Err(err) => self.status = format!("{}: {err}", t!("settings.save_failed")),
             },
-            Err(err) => self.status = format!("序列化设置失败: {err}"),
+            Err(err) => self.status = format!("{}: {err}", t!("settings.serialize_failed")),
         }
     }
 
     fn apply_window_level(&mut self, ctx: &egui::Context) {
         self.send_window_level(ctx);
         self.status = if self.window_pinned {
-            "窗口已置顶".to_string()
+            t!("status.window_pinned").to_string()
         } else {
-            "窗口已取消置顶".to_string()
+            t!("status.window_unpinned").to_string()
         };
     }
 
@@ -1955,7 +1958,7 @@ impl ClipboardApp {
 
     fn save_selected_tags(&mut self) {
         if !self.tag_manager_enabled {
-            self.status = "标签管理已关闭".to_string();
+            self.status = t!("settings.tags.manager_closed").to_string();
             return;
         }
         let Some(id) = self.selected_id else {
@@ -1964,11 +1967,11 @@ impl ClipboardApp {
         let tags = parse_tags(&self.tag_editor);
         match self.storage.set_tags(id, &tags) {
             Ok(()) => {
-                self.status = "标签已保存".to_string();
+                self.status = t!("settings.tags.saved").to_string();
                 self.saved_tags = self.storage.saved_tags().unwrap_or_default();
                 self.refresh_entries();
             }
-            Err(err) => self.status = format!("保存标签失败: {err}"),
+            Err(err) => self.status = format!("{}: {err}", t!("settings.tags.save_failed")),
         }
     }
 
@@ -2042,7 +2045,7 @@ impl ClipboardApp {
         if scroll_y > SEARCH_BOX_SCROLL_THRESHOLD && self.history_at_top && top_is_stable {
             consume_scroll_input(ctx);
             self.search_box_revealed = true;
-            self.status = "已临时显示搜索框".to_string();
+            self.status = t!("search.scroll_show").to_string();
         } else if scroll_y < -SEARCH_BOX_SCROLL_THRESHOLD
             && self.search_box_revealed
             && self.history_at_top
@@ -2055,7 +2058,7 @@ impl ClipboardApp {
             self.focus_search = false;
             self.search_scroll_gate.force_top_until = Some(now + FORCE_HISTORY_TOP_DURATION);
             self.search_scroll_gate.top_since = Some(now);
-            self.status = "已隐藏搜索框".to_string();
+            self.status = t!("search.scroll_hide").to_string();
         }
     }
 
@@ -2087,7 +2090,7 @@ impl ClipboardApp {
         };
         if recorded == "Escape" {
             self.recording_hotkey = None;
-            self.status = "已取消快捷键录制".to_string();
+            self.status = t!("settings.hotkey.cancel_recording").to_string();
             return true;
         }
         self.apply_recorded_hotkey(target, recorded);
@@ -2097,7 +2100,7 @@ impl ClipboardApp {
 
     fn apply_recorded_hotkey(&mut self, target: HotkeyTarget, recorded: String) {
         if let Err(err) = platform::validate_hotkey(&recorded) {
-            self.status = format!("快捷键不可用，未保存：{recorded}（{err}）");
+            self.status = format!("{}: {recorded} ({err})", t!("settings.hotkey.validate_failed"));
             return;
         }
         match target {
@@ -2114,7 +2117,7 @@ impl ClipboardApp {
         }
         self.update_hotkeys();
         self.persist_preferences();
-        self.status = format!("已录制快捷键：{recorded}");
+        self.status = format!("{}: {recorded}", t!("settings.hotkey.recorded_success"));
     }
 
     fn remove_main_hotkey(&mut self, hotkey: &str) {
@@ -2125,7 +2128,7 @@ impl ClipboardApp {
         self.main_hotkeys = remaining.join("\n");
         self.update_hotkeys();
         self.persist_preferences();
-        self.status = format!("已删除主快捷键：{hotkey}");
+        self.status = format!("{}: {hotkey}", t!("settings.hotkey.removed_main"));
     }
 
     fn add_tag_to_editor(&mut self, tag: &str) {
@@ -2142,33 +2145,33 @@ impl ClipboardApp {
     fn refresh_saved_tags(&mut self) {
         match self.storage.saved_tags() {
             Ok(tags) => self.saved_tags = tags,
-            Err(err) => self.status = format!("读取标签目录失败: {err}"),
+            Err(err) => self.status = format!("{}: {err}", t!("settings.tags.read_catalog_failed")),
         }
     }
 
     fn add_saved_tag_from_input(&mut self) {
         if !self.tag_manager_enabled {
-            self.status = "标签管理已关闭".to_string();
+            self.status = t!("settings.tags.manager_closed").to_string();
             return;
         }
         let tag = self.new_tag_input.trim().to_string();
         if tag.is_empty() {
-            self.status = "标签名不能为空".to_string();
+            self.status = t!("settings.tags.name_empty").to_string();
             return;
         }
         match self.storage.add_saved_tag(&tag) {
             Ok(()) => {
                 self.new_tag_input.clear();
                 self.refresh_saved_tags();
-                self.status = "标签已加入目录".to_string();
+                self.status = t!("settings.tags.added_to_catalog").to_string();
             }
-            Err(err) => self.status = format!("新增标签失败: {err}"),
+            Err(err) => self.status = format!("{}: {err}", t!("settings.tags.add_tag_failed")),
         }
     }
 
     fn delete_saved_tag(&mut self, tag: &str) {
         if !self.tag_manager_enabled {
-            self.status = "标签管理已关闭".to_string();
+            self.status = t!("settings.tags.manager_closed").to_string();
             return;
         }
         match self.storage.delete_saved_tag(tag) {
@@ -2179,9 +2182,9 @@ impl ClipboardApp {
                 }
                 self.refresh_saved_tags();
                 self.refresh_entries();
-                self.status = "标签已从目录移除，已有条目标签不受影响".to_string();
+                self.status = t!("settings.tags.removed_from_catalog").to_string();
             }
-            Err(err) => self.status = format!("删除目录标签失败: {err}"),
+            Err(err) => self.status = format!("{}: {err}", t!("settings.tags.remove_tag_failed")),
         }
     }
 
@@ -2189,7 +2192,7 @@ impl ClipboardApp {
         self.selected_saved_tag = Some(tag.to_string());
         match self.storage.saved_tag_color(tag) {
             Ok(color) => self.tag_detail_color = color,
-            Err(err) => self.status = format!("读取标签颜色失败: {err}"),
+            Err(err) => self.status = format!("{}: {err}", t!("settings.tags.read_color_failed")),
         }
     }
 
@@ -2271,7 +2274,7 @@ impl ClipboardApp {
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     if self.current_page != AppPage::Clipboard
-                        && toolbar_button(ui, "‹", "返回剪贴板", &self.theme).clicked()
+                        && toolbar_button(ui, "‹", t!("tooltip.back_to_clipboard"), &self.theme).clicked()
                     {
                         self.current_page = AppPage::Clipboard;
                     }
@@ -2279,10 +2282,10 @@ impl ClipboardApp {
                     if page_title(
                         ui,
                         match self.current_page {
-                            AppPage::Clipboard => APP_DISPLAY_NAME,
-                            AppPage::Emoji => "表情包",
-                            AppPage::Symbol => "符号",
-                            AppPage::Settings => "设置",
+                            AppPage::Clipboard => Cow::Borrowed(APP_DISPLAY_NAME),
+                            AppPage::Emoji => t!("tooltip.emoji"),
+                            AppPage::Symbol => t!("tooltip.symbol"),
+                            AppPage::Settings => t!("tooltip.settings"),
                         },
                         &self.theme,
                     )
@@ -2323,43 +2326,43 @@ impl ClipboardApp {
                     }
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if toolbar_button(ui, "×", "最小化到任务栏", &self.theme).clicked()
+                        if toolbar_button(ui, "×", t!("tooltip.minimize"), &self.theme).clicked()
                         {
                             self.close_or_hide_window(ctx);
                         }
                         if self.current_page == AppPage::Clipboard {
-                            if toolbar_button(ui, "⚙", "设置", &self.theme).clicked() {
+                            if toolbar_button(ui, "⚙", t!("tooltip.settings"), &self.theme).clicked() {
                                 self.current_page = AppPage::Settings;
                             }
                             if self.emoji_panel_enabled
-                                && toolbar_button(ui, "☺", "表情包", &self.theme).clicked()
+                                && toolbar_button(ui, "☺", t!("tooltip.emoji"), &self.theme).clicked()
                             {
                                 self.current_page = AppPage::Emoji;
                             }
                             if self.symbol_panel_enabled
-                                && toolbar_button(ui, "∑", "符号", &self.theme).clicked()
+                                && toolbar_button(ui, "∑", t!("tooltip.symbol"), &self.theme).clicked()
                             {
                                 self.current_page = AppPage::Symbol;
                             }
-                            if toolbar_button(ui, "⌫", "清空非置顶", &self.theme).clicked() {
+                            if toolbar_button(ui, "⌫", t!("tooltip.clear_unpinned"), &self.theme).clicked() {
                                 match self.storage.clear_unpinned() {
                                     Ok(()) => {
-                                        self.status = "已清空非置顶记录".to_string();
+                                        self.status = t!("history.cleared_unpinned").to_string();
                                         self.refresh_entries();
                                     }
-                                    Err(err) => self.status = format!("清空失败: {err}"),
+                                    Err(err) => self.status = format!("{}: {err}", t!("history.clear_failed")),
                                 }
                             }
                         }
                         let pin_label = if self.window_pinned { "📍" } else { "📌" };
-                        if toolbar_button(ui, pin_label, "窗口置顶/取消置顶", &self.theme).clicked()
+                        if toolbar_button(ui, pin_label, t!("tooltip.pin_toggle"), &self.theme).clicked()
                         {
                             self.window_pinned = !self.window_pinned;
                             self.apply_window_level(ctx);
                             self.persist_preferences();
                         }
                         if self.dev_mode
-                            && toolbar_button(ui, "DEV", "开发工具", &self.theme).clicked()
+                            && toolbar_button(ui, "DEV", t!("tooltip.dev_tools"), &self.theme).clicked()
                         {
                             self.show_dev_panel = !self.show_dev_panel;
                         }
@@ -2395,7 +2398,7 @@ impl ClipboardApp {
                                     self.refresh_entries();
                                 }
                                 if !self.query.is_empty()
-                                    && toolbar_button(ui, "清", "清除搜索", &self.theme).clicked()
+                                    && toolbar_button(ui, &t!("search.clear"), t!("search.clear_tooltip"), &self.theme).clicked()
                                 {
                                     self.query.clear();
                                     self.refresh_entries();
@@ -2444,7 +2447,7 @@ impl ClipboardApp {
     fn draw_type_filters(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             let all_selected = self.kind_filter.is_none();
-            if filter_chip(ui, "全部", all_selected, &self.theme).clicked() {
+            if filter_chip(ui, t!("history.filter_all"), all_selected, &self.theme).clicked() {
                 self.set_kind_filter(None);
             }
             for kind in ClipboardKind::ALL {
@@ -2458,9 +2461,9 @@ impl ClipboardApp {
 
     fn draw_tag_filters(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("标签").color(self.theme.muted));
+            ui.label(egui::RichText::new(t!("history.tag_label")).color(self.theme.muted));
             let all_selected = self.tag_filter.is_none();
-            if filter_chip(ui, "全部", all_selected, &self.theme).clicked() {
+            if filter_chip(ui, t!("history.filter_all"), all_selected, &self.theme).clicked() {
                 self.set_tag_filter(None);
             }
             let tags = self.saved_tags.clone();
@@ -2484,20 +2487,20 @@ impl ClipboardApp {
                 || (self.tag_manager_enabled && self.tag_filter.is_some());
             let (title, description) = if filtered {
                 (
-                    "没有匹配结果",
+                    t!("history.no_match_title"),
                     if self.tag_manager_enabled {
-                        "当前搜索、类型或标签过滤没有命中；清除过滤后可查看全部历史。"
+                        t!("history.no_match_with_tag")
                     } else {
-                        "当前搜索或类型过滤没有命中；清除过滤后可查看全部历史。"
+                        t!("history.no_match_without_tag")
                     },
                 )
             } else {
                 (
-                    "暂无剪贴板历史",
-                    "复制一段文字后，它会以 tiez-slim 风格卡片显示在这里。",
+                    t!("history.empty_title"),
+                    t!("history.empty_description"),
                 )
             };
-            empty_state(ui, title, description, &self.theme);
+            empty_state(ui, &title, &description, &self.theme);
             return;
         }
 
@@ -2781,7 +2784,7 @@ impl ClipboardApp {
                         self.refresh_entries();
                         return true;
                     }
-                    Err(err) => self.status = format!("置顶失败: {err}"),
+                    Err(err) => self.status = format!("{}: {err}", t!("history.pin_failed")),
                 },
                 CardAction::Open => {
                     self.select_entry(entry_id);
@@ -2793,14 +2796,14 @@ impl ClipboardApp {
                     self.image_textures.remove(&entry_id);
                     match self.storage.delete(entry_id) {
                         Ok(()) => {
-                            self.status = "已删除记录".to_string();
+                            self.status = t!("history.deleted_record").to_string();
                             if self.selected_id == Some(entry_id) {
                                 self.selected_id = None;
                             }
                             self.refresh_entries();
                             return true;
                         }
-                        Err(err) => self.status = format!("删除失败: {err}"),
+                        Err(err) => self.status = format!("{}: {err}", t!("history.delete_failed")),
                     }
                 }
             }
@@ -2846,10 +2849,10 @@ impl ClipboardApp {
             return;
         };
         let title = match entry.kind {
-            ClipboardKind::RichText => "富文本预览",
-            ClipboardKind::Image => "图片预览",
-            ClipboardKind::File => "文件预览",
-            ClipboardKind::Video => "视频文件预览",
+            ClipboardKind::RichText => t!("preview.rich_text"),
+            ClipboardKind::Image => t!("preview.image"),
+            ClipboardKind::File => t!("preview.file"),
+            ClipboardKind::Video => t!("preview.video"),
             _ => return,
         };
         if matches!(entry.kind, ClipboardKind::RichText)
@@ -2953,7 +2956,7 @@ impl ClipboardApp {
             let size = fit_texture_size(texture.size_vec2(), max_size);
             ui.add(egui::Image::new((texture.id(), size)).rounding(egui::Rounding::same(8.0)));
         } else {
-            thumbnail_placeholder(ui, "无法加载图片", &self.theme);
+            thumbnail_placeholder(ui, t!("preview.image_load_failed"), &self.theme);
         }
     }
 
@@ -2995,37 +2998,37 @@ impl ClipboardApp {
         let Some(summary) = self.selected_entry() else {
             empty_state(
                 ui,
-                "未选择记录",
-                "从左侧选择一条历史记录查看完整内容和操作。",
+                t!("detail.not_selected"),
+                t!("detail.not_selected_hint"),
                 &self.theme,
             );
             return;
         };
         let Some(entry) = self.get_full_entry(summary.id) else {
-            empty_state(ui, "无法加载内容", "条目可能已被删除。", &self.theme);
+            empty_state(ui, t!("detail.load_failed"), t!("detail.load_failed_hint"), &self.theme);
             return;
         };
 
         ui.horizontal(|ui| {
-            ui.heading("详情");
+            ui.heading(t!("detail.title"));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("删除").clicked() {
+                if ui.button(t!("common.delete")).clicked() {
                     self.delete_selected();
                 }
                 if ui
                     .button(if summary.is_pinned {
-                        "取消置顶"
+                        t!("common.unpin")
                     } else {
-                        "置顶"
+                        t!("common.pin")
                     })
                     .clicked()
                 {
                     self.toggle_selected_pin();
                 }
-                if ui.button("复制并粘贴").clicked() {
+                if ui.button(t!("detail.copy_and_paste")).clicked() {
                     self.paste_entry(ui.ctx(), &summary, false);
                 }
-                if ui.button("打开").clicked() {
+                if ui.button(t!("common.open")).clicked() {
                     self.open_entry(&summary);
                 }
             });
@@ -3036,23 +3039,23 @@ impl ClipboardApp {
         ui.add_space(12.0);
 
         if self.tag_manager_enabled {
-            ui.label(egui::RichText::new("标签").strong());
+            ui.label(egui::RichText::new(t!("history.tag_label")).strong());
             ui.horizontal(|ui| {
                 let tags = ui.add_sized(
                     [ui.available_width() - 72.0, 32.0],
                     egui::TextEdit::singleline(&mut self.tag_editor)
-                        .hint_text("用逗号分隔，例如：工作, 代码, 临时"),
+                        .hint_text(t!("detail.tag_hint")),
                 );
                 if tags.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
                     self.save_selected_tags();
                 }
-                if ui.button("保存").clicked() {
+                if ui.button(t!("common.save")).clicked() {
                     self.save_selected_tags();
                 }
             });
             if !self.saved_tags.is_empty() {
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("快速标签").color(self.theme.muted));
+                    ui.label(egui::RichText::new(t!("detail.quick_tags")).color(self.theme.muted));
                     let tags = self.saved_tags.clone();
                     for tag in tags {
                         if filter_chip(
@@ -3070,12 +3073,12 @@ impl ClipboardApp {
             }
         } else {
             ui.label(
-                egui::RichText::new("标签管理已关闭，可在设置中重新启用。").color(self.theme.muted),
+                egui::RichText::new(t!("detail.tag_manager_closed_hint")).color(self.theme.muted),
             );
         }
 
         ui.add_space(12.0);
-        ui.label(egui::RichText::new("内容").strong());
+        ui.label(egui::RichText::new(t!("detail.content")).strong());
         let content_is_masked =
             self.privacy_protection && summary.is_sensitive() && !self.show_sensitive;
         let display_content = if content_is_masked {
@@ -3096,7 +3099,7 @@ impl ClipboardApp {
                         if content_is_masked {
                             ui.colored_label(
                                 self.theme.muted,
-                                "敏感内容已隐藏。可在设置中临时显示。",
+                                t!("detail.sensitive_hidden"),
                             );
                             ui.separator();
                         }
@@ -3122,7 +3125,7 @@ impl ClipboardApp {
             }
             if filter_chip(
                 ui,
-                "收藏",
+                t!("emoji.tab.favorites"),
                 self.emoji_tab == EmojiTab::Favorites,
                 &self.theme,
             )
@@ -3159,18 +3162,17 @@ impl ClipboardApp {
                 let page_end = (page_start + EMOJI_PAGE_SIZE).min(group.emojis.len());
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
-                        egui::RichText::new(format!(
-                            "{}：{} 个 · 第 {}/{} 页",
-                            group.name,
-                            group.emojis.len(),
-                            self.emoji_page + 1,
-                            total_pages
-                        ))
+                        egui::RichText::new(t!("emoji.page_info")
+                            .replace("{name}", &group.name)
+                            .replace("{count}", &group.emojis.len().to_string())
+                            .replace("{current}", &(self.emoji_page + 1).to_string())
+                            .replace("{total}", &total_pages.to_string())
+                        )
                         .size(14.0)
                         .strong(),
                     );
                     if ui
-                        .add_enabled(self.emoji_page > 0, egui::Button::new("上一页"))
+                        .add_enabled(self.emoji_page > 0, egui::Button::new(t!("emoji.prev_page")))
                         .clicked()
                     {
                         self.emoji_page = self.emoji_page.saturating_sub(1);
@@ -3178,7 +3180,7 @@ impl ClipboardApp {
                     if ui
                         .add_enabled(
                             self.emoji_page + 1 < total_pages,
-                            egui::Button::new("下一页"),
+                            egui::Button::new(t!("emoji.next_page")),
                         )
                         .clicked()
                     {
@@ -3186,11 +3188,10 @@ impl ClipboardApp {
                     }
                 });
                 ui.label(
-                    egui::RichText::new(format!(
-                        "分组来自 Unicode emoji-test.txt / CLDR 顺序；当前组：{}。完整 Twemoji 共 {} 个。",
-                        group.source_name,
-                        ALL_TWEMOJI_EMOJIS.len()
-                    ))
+                    egui::RichText::new(t!("emoji.group_source_hint")
+                        .replace("{source}", &group.source_name)
+                        .replace("{total}", &ALL_TWEMOJI_EMOJIS.len().to_string())
+                    )
                         .color(self.theme.muted),
                 );
                 ui.add_space(8.0);
@@ -3203,7 +3204,7 @@ impl ClipboardApp {
                                     self.paste_text_value(
                                         ctx,
                                         emoji,
-                                        &format!("已写入表情：{emoji}，准备粘贴"),
+                                        &t!("emoji.pasted", emoji = emoji),
                                     );
                                 }
                             }
@@ -3214,14 +3215,14 @@ impl ClipboardApp {
                 self.refresh_emoji_favorites_from_disk();
                 self.handle_emoji_favorite_drops(ui.ctx());
                 ui.horizontal_wrapped(|ui| {
-                    if ui.button("添加图片收藏…").clicked() {
+                    if ui.button(t!("emoji.add_favorite")).clicked() {
                         match pick_emoji_favorite_files_with_dialog() {
                             Ok(paths) => self.add_emoji_favorite_paths(paths),
                             Err(err) => self.status = err,
                         }
                     }
                     ui.label(
-                        egui::RichText::new("点击收藏图片/文件会直接粘贴；也可拖放图片或粘贴 data URL 添加。右侧 × 可移除。")
+                        egui::RichText::new(t!("emoji.favorite_hint"))
                             .color(self.theme.muted),
                     );
                 });
@@ -3235,7 +3236,7 @@ impl ClipboardApp {
                         .inner_margin(egui::Margin::same(12.0))
                         .show(ui, |ui| {
                             ui.label(
-                                egui::RichText::new("释放图片即可添加到表情包收藏")
+                                egui::RichText::new(t!("emoji.drop_hint"))
                                     .color(self.theme.accent),
                             );
                         });
@@ -3244,8 +3245,8 @@ impl ClipboardApp {
                 if self.emoji_favorites.is_empty() {
                     empty_state(
                         ui,
-                        "暂无收藏",
-                        "添加或拖放常用表情包图片后，会复制到当前数据库旁的 emoji_favorites 目录并保存在 app.emoji_favorites。",
+                        t!("emoji.no_favorites"),
+                        t!("emoji.no_favorites_hint"),
                         &self.theme,
                     );
                 } else {
@@ -3268,7 +3269,7 @@ impl ClipboardApp {
     }
 
     fn draw_symbol_page(&mut self, ui: &mut egui::Ui, ctx: &egui::Context) {
-        ui.label(egui::RichText::new("点击即可粘贴不在键盘上的常用符号。").color(self.theme.muted));
+        ui.label(egui::RichText::new(t!("symbol.hint")).color(self.theme.muted));
         ui.add_space(10.0);
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -3282,7 +3283,7 @@ impl ClipboardApp {
                                 self.paste_text_value(
                                     ctx,
                                     symbol,
-                                    &format!("已写入符号：{symbol}，准备粘贴"),
+                                    &t!("symbol.pasted", symbol = symbol),
                                 );
                             }
                         }
@@ -3297,34 +3298,35 @@ impl ClipboardApp {
             return;
         }
 
-        egui::Window::new("开发工具")
+        egui::Window::new(t!("tooltip.dev_tools"))
             .default_width(360.0)
             .resizable(true)
             .show(ctx, |ui| {
-                ui.label("运行模式：dev");
+                ui.label(t!("status.dev_panel.run_mode"));
                 if let Some(cpu_usage) = frame.info().cpu_usage {
                     ui.label(format!("CPU/frame：{:.2} ms", cpu_usage * 1000.0));
                 } else {
-                    ui.label("CPU/frame：采集中");
+                    ui.label(t!("status.dev_panel.cpu_collecting"));
                 }
                 ui.label(format!("Frame：{}", self.frame_count));
-                ui.label(format!("显示条目：{}", self.entries.len()));
-                ui.label(format!("事件总数：{}", self.event_count));
-                ui.label(format!("保存成功：{}", self.saved_count));
-                ui.label(format!("错误次数：{}", self.error_count));
-                ui.label(format!("当前搜索：{}", self.query));
-                ui.label(format!("选中 ID：{:?}", self.selected_id));
+                ui.label(t!("status.dev_panel.displayed_entries", count = self.entries.len()));
+                ui.label(t!("status.dev_panel.total_events", count = self.event_count));
+                ui.label(t!("status.dev_panel.saved_success", count = self.saved_count));
+                ui.label(t!("status.dev_panel.error_count", count = self.error_count));
+                ui.label(t!("status.dev_panel.current_search", query = self.query));
+                let id_str = self.selected_id.map(|id| id.to_string()).unwrap_or_else(|| "—".to_string());
+                ui.label(t!("status.dev_panel.selected_id", id = id_str));
                 ui.separator();
-                ui.collapsing("调试覆盖层", |ui| {
-                    ui.label("已禁用 egui 红色调试覆盖层与 widget ID 冲突提示，避免污染正常界面。");
+                ui.collapsing(t!("status.dev_panel.debug_overlay"), |ui| {
+                    ui.label(t!("status.dev_panel.debug_overlay_hint"));
                 });
                 ui.separator();
                 ui.horizontal(|ui| {
-                    ui.label("显示 egui Inspection");
+                    ui.label(t!("status.dev_panel.show_inspection"));
                     macos_toggle(ui, &mut self.show_inspection, &self.theme);
                 });
                 ui.horizontal(|ui| {
-                    ui.label("显示 egui Memory");
+                    ui.label(t!("status.dev_panel.show_memory"));
                     macos_toggle(ui, &mut self.show_memory, &self.theme);
                 });
                 if self.show_inspection {
@@ -3334,7 +3336,7 @@ impl ClipboardApp {
                     ui.collapsing("egui Memory", |ui| ctx.memory_ui(ui));
                 }
                 ui.separator();
-                ui.label("最近状态：");
+                ui.label(t!("status.dev_panel.recent_status"));
                 ui.monospace(&self.status);
             });
     }
@@ -3344,16 +3346,16 @@ impl ClipboardApp {
             .max_width(700.0)
             .show(ui, |ui| {
                 apply_settings_widget_rounding(ui, self.theme.radius_input);
-            ui.label(egui::RichText::new("设置会在切换时自动保存").color(self.theme.muted));
+            ui.label(egui::RichText::new(t!("settings.auto_save_hint")).color(self.theme.muted));
             ui.add_space(8.0);
 
         {
             let prev = self.settings_panel_collapsed[0];
             let mut expanded = !prev;
             let theme = self.theme.clone();
-            macos_collapsible_group(ui, "常规设置", &mut expanded, &theme, |ui| {
+            macos_collapsible_group(ui, t!("settings.general.title"), &mut expanded, &theme, |ui| {
                 if ui.horizontal(|ui| {
-                    ui.label("启用表情包入口");
+                    ui.label(t!("settings.general.emoji_entry"));
                     macos_toggle(ui, &mut self.emoji_panel_enabled, &self.theme)
                 }).inner.changed() {
                     if !self.emoji_panel_enabled && self.current_page == AppPage::Emoji {
@@ -3362,7 +3364,7 @@ impl ClipboardApp {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("启用符号入口");
+                    ui.label(t!("settings.general.symbol_entry"));
                     macos_toggle(ui, &mut self.symbol_panel_enabled, &self.theme)
                 }).inner.changed() {
                     if !self.symbol_panel_enabled && self.current_page == AppPage::Symbol {
@@ -3371,30 +3373,30 @@ impl ClipboardApp {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("开机启动");
+                    ui.label(t!("settings.general.autostart"));
                     macos_toggle(ui, &mut self.autostart_enabled, &self.theme)
                 }).inner.changed() {
                     match platform::set_autostart(self.autostart_enabled) {
                         Ok(()) => {
                             self.status = if self.autostart_enabled {
-                                "已启用开机启动".to_string()
+                                t!("settings.general.autostart_enabled").to_string()
                             } else {
-                                "已关闭开机启动".to_string()
+                                t!("settings.general.autostart_disabled").to_string()
                             };
                             self.persist_preferences();
                         }
                         Err(err) => {
                             self.autostart_enabled = !self.autostart_enabled;
-                            self.status = format!("设置开机启动失败: {err}");
+                            self.status = format!("{}: {err}", t!("settings.general.autostart_failed"));
                         }
                     }
                 }
                 ui.label(
-                    egui::RichText::new("启用后会写入 XDG autostart，并以最小化方式启动。")
+                    egui::RichText::new(t!("settings.general.autostart_hint"))
                         .color(self.theme.muted),
                 );
                 if ui.horizontal(|ui| {
-                    ui.label("启用标签管理能力");
+                    ui.label(t!("settings.general.tag_manager"));
                     macos_toggle(ui, &mut self.tag_manager_enabled, &self.theme)
                 }).inner.changed() {
                     if !self.tag_manager_enabled {
@@ -3406,7 +3408,7 @@ impl ClipboardApp {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("始终显示搜索框");
+                    ui.label(t!("settings.general.always_show_search"));
                     macos_toggle(ui, &mut self.show_search_box, &self.theme)
                 }).inner.changed() {
                     self.search_box_revealed = self.show_search_box;
@@ -3414,29 +3416,29 @@ impl ClipboardApp {
                 }
                 ui.label(
                     egui::RichText::new(
-                        "关闭后，先滚到历史顶端并停顿片刻，再向上滚动可临时唤出；无搜索/过滤时向下滚动会隐藏并停在顶端。",
+                        t!("settings.general.always_show_search_hint"),
                     )
                         .color(self.theme.muted),
                 );
                 if ui.horizontal(|ui| {
-                    ui.label("简洁模式");
+                    ui.label(t!("settings.general.compact_mode"));
                     macos_toggle(ui, &mut self.compact_rows, &self.theme)
                 }).inner.changed()
                 {
                     self.persist_preferences();
                 }
                 ui.label(
-                    egui::RichText::new("开启后卡片更紧凑，操作按钮默认隐藏并在悬浮时显示。")
+                    egui::RichText::new(t!("settings.general.compact_mode_hint"))
                         .color(self.theme.muted),
                 );
                 if ui.horizontal(|ui| {
-                    ui.label("方向键选择历史");
+                    ui.label(t!("settings.general.arrow_key_selection"));
                     macos_toggle(ui, &mut self.arrow_key_selection, &self.theme)
                 }).inner.changed() {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("隐藏系统托盘图标");
+                    ui.label(t!("settings.general.hide_tray_icon"));
                     macos_toggle(ui, &mut self.hide_tray_icon, &self.theme)
                 }).inner.changed() {
                     self.apply_tray_visibility(ctx);
@@ -3445,7 +3447,7 @@ impl ClipboardApp {
                 let can_close_to_tray = !self.hide_tray_icon && self.tray_handle.is_some();
                 if ui.add_enabled_ui(can_close_to_tray, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("有托盘时关闭按钮隐藏到托盘");
+                        ui.label(t!("settings.general.close_to_tray"));
                         macos_toggle(ui, &mut self.close_to_tray, &self.theme)
                     }).inner
                 }).inner.changed()
@@ -3453,7 +3455,7 @@ impl ClipboardApp {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("音效");
+                    ui.label(t!("settings.general.sound"));
                     macos_toggle(ui, &mut self.sound_enabled, &self.theme)
                 }).inner.changed() {
                     self.persist_preferences();
@@ -3464,7 +3466,7 @@ impl ClipboardApp {
                 if self.sound_enabled {
                     let mut volume = self.sound_volume as f32;
                     if ui.horizontal(|ui| {
-                        ui.label("音效音量");
+                        ui.label(t!("settings.general.sound_volume"));
                         let changed = macos_range_slider(ui, &mut volume, 0.0..=100.0, &self.theme).changed();
                         ui.label(egui::RichText::new(format!("{}%", volume.round() as u8)).color(self.theme.muted));
                         changed
@@ -3473,7 +3475,7 @@ impl ClipboardApp {
                         self.persist_preferences();
                     }
                     if ui.horizontal(|ui| {
-                        ui.label("粘贴音效");
+                        ui.label(t!("settings.general.paste_sound"));
                         macos_toggle(ui, &mut self.paste_sound_enabled, &self.theme)
                     }).inner.changed() {
                         self.persist_preferences();
@@ -3490,18 +3492,18 @@ impl ClipboardApp {
             let prev = self.settings_panel_collapsed[1];
             let mut expanded = !prev;
             let theme = self.theme.clone();
-            macos_collapsible_group(ui, "快捷键设置", &mut expanded, &theme, |ui| {
-                ui.label(egui::RichText::new("点击\u{201c}录制\u{201d}后按键盘组合，或按鼠标中键；Esc 取消。主快捷键可录制多条。").color(self.theme.muted));
+            macos_collapsible_group(ui, t!("settings.hotkey.title"), &mut expanded, &theme, |ui| {
+                ui.label(egui::RichText::new(t!("settings.hotkey.hint")).color(self.theme.muted));
                 let main_hotkeys = self.main_hotkeys.clone();
                 let sequential_hotkey = self.sequential_hotkey.clone();
                 let rich_paste_hotkey = self.rich_paste_hotkey.clone();
                 let search_hotkey = self.search_hotkey.clone();
-                hotkey_record_row(ui, "主呼出", &main_hotkeys, self.recording_hotkey == Some(HotkeyTarget::Main), |ui| {
-                    if ui.button("录制新增").clicked() {
+                hotkey_record_row(ui, t!("settings.hotkey.main_invoke"), &main_hotkeys, self.recording_hotkey == Some(HotkeyTarget::Main), |ui| {
+                    if ui.button(t!("settings.hotkey.record_new")).clicked() {
                         self.recording_hotkey = Some(HotkeyTarget::Main);
-                        self.status = "正在录制主快捷键，可按鼠标中键".to_string();
+                        self.status = t!("settings.hotkey.recording_main").to_string();
                     }
-                    if ui.button("清空").clicked() {
+                    if ui.button(t!("settings.hotkey.clear_all")).clicked() {
                         self.main_hotkeys.clear();
                         self.update_hotkeys();
                         self.persist_preferences();
@@ -3510,7 +3512,7 @@ impl ClipboardApp {
                 let main_hotkey_items = hotkey_lines(&main_hotkeys);
                 if !main_hotkey_items.is_empty() {
                     ui.horizontal_wrapped(|ui| {
-                        ui.label(egui::RichText::new("已录制").color(self.theme.muted));
+                        ui.label(egui::RichText::new(t!("settings.hotkey.recorded")).color(self.theme.muted));
                         let mut remove_hotkey = None;
                         for hotkey in &main_hotkey_items {
                             if removable_hotkey_chip(ui, hotkey, &self.theme).clicked() {
@@ -3522,17 +3524,17 @@ impl ClipboardApp {
                         }
                     });
                 }
-                hotkey_single_record_row(ui, "顺序粘贴", &sequential_hotkey, self.recording_hotkey == Some(HotkeyTarget::Sequential), || {
+                hotkey_single_record_row(ui, t!("settings.hotkey.sequential_paste"), &sequential_hotkey, self.recording_hotkey == Some(HotkeyTarget::Sequential), || {
                     self.recording_hotkey = Some(HotkeyTarget::Sequential);
-                    self.status = "正在录制顺序粘贴快捷键".to_string();
+                    self.status = t!("settings.hotkey.recording_sequential").to_string();
                 });
-                hotkey_single_record_row(ui, "富文本粘贴", &rich_paste_hotkey, self.recording_hotkey == Some(HotkeyTarget::RichPaste), || {
+                hotkey_single_record_row(ui, t!("settings.hotkey.rich_paste"), &rich_paste_hotkey, self.recording_hotkey == Some(HotkeyTarget::RichPaste), || {
                     self.recording_hotkey = Some(HotkeyTarget::RichPaste);
-                    self.status = "正在录制富文本粘贴快捷键".to_string();
+                    self.status = t!("settings.hotkey.recording_rich_paste").to_string();
                 });
-                hotkey_single_record_row(ui, "搜索聚焦", &search_hotkey, self.recording_hotkey == Some(HotkeyTarget::Search), || {
+                hotkey_single_record_row(ui, t!("settings.hotkey.search_focus"), &search_hotkey, self.recording_hotkey == Some(HotkeyTarget::Search), || {
                     self.recording_hotkey = Some(HotkeyTarget::Search);
-                    self.status = "正在录制搜索聚焦快捷键".to_string();
+                    self.status = t!("settings.hotkey.recording_search").to_string();
                 });
             });
             if expanded == prev {
@@ -3545,39 +3547,39 @@ impl ClipboardApp {
             let prev = self.settings_panel_collapsed[2];
             let mut expanded = !prev;
             let theme = self.theme.clone();
-            macos_collapsible_group(ui, "剪贴板设置", &mut expanded, &theme, |ui| {
+            macos_collapsible_group(ui, t!("settings.clipboard.title"), &mut expanded, &theme, |ui| {
                 ui.add_enabled_ui(false, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label("持久化保存历史（当前固定开启）");
+                        ui.label(t!("settings.clipboard.persistent"));
                         macos_toggle(ui, &mut self.persistent, &self.theme);
                     });
                 });
                 if ui.horizontal(|ui| {
-                    ui.label("去重合并相同内容");
+                    ui.label(t!("settings.clipboard.deduplicate"));
                     macos_toggle(ui, &mut self.deduplicate, &self.theme)
                 }).inner.changed() {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("捕获文件剪贴板（路径/URI）");
+                    ui.label(t!("settings.clipboard.capture_files"));
                     macos_toggle(ui, &mut self.capture_files, &self.theme)
                 }).inner.changed() {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("捕获富文本 HTML");
+                    ui.label(t!("settings.clipboard.capture_rich_text"));
                     macos_toggle(ui, &mut self.capture_rich_text, &self.theme)
                 }).inner.changed() {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("粘贴后删除");
+                    ui.label(t!("settings.clipboard.delete_after_paste"));
                     macos_toggle(ui, &mut self.delete_after_paste, &self.theme)
                 }).inner.changed() {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("粘贴后移到顶部");
+                    ui.label(t!("settings.clipboard.move_to_top_after_paste"));
                     macos_toggle(ui, &mut self.move_to_top_after_paste, &self.theme)
                 }).inner.changed() {
                     self.persist_preferences();
@@ -3585,29 +3587,29 @@ impl ClipboardApp {
                 let paste_options = [
                     DropdownOption::borrowed(
                         "shift_insert",
-                        "Shift+Insert（文本优先，文件/图片自动 Ctrl+V）",
+                        t!("settings.clipboard.paste_method_shift_insert"),
                     ),
                     DropdownOption::borrowed("ctrl_v", "Ctrl+V"),
-                    DropdownOption::borrowed("type_text", "逐字输入（仅文本兜底）"),
+                    DropdownOption::borrowed("type_text", t!("settings.clipboard.paste_method_type_text")),
                 ];
                 if searchable_combo_row(
                     ui,
-                    "粘贴模拟方式",
+                    t!("settings.clipboard.paste_method"),
                     &mut self.paste_method,
                     &mut self.paste_method_search,
                     &paste_options,
-                    "搜索粘贴方式...",
+                    t!("settings.clipboard.paste_method_search_hint"),
                     &self.theme,
                 ) {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("隐私保护/敏感内容识别");
+                    ui.label(t!("settings.clipboard.privacy_protection"));
                     macos_toggle(ui, &mut self.privacy_protection, &self.theme)
                 }).inner.changed() {
                     self.persist_preferences();
                 }
-                ui.label(egui::RichText::new("当前已落地：文本、富文本 HTML、图片、文件剪贴板捕获/写回；粘贴模拟按 tiez-slim 使用 Shift+Insert/Ctrl+V。" ).color(self.theme.muted));
+                ui.label(egui::RichText::new(t!("settings.clipboard.clipboard_status_hint") ).color(self.theme.muted));
             });
             if expanded == prev {
                 self.settings_panel_collapsed[2] = !expanded;
@@ -3619,12 +3621,12 @@ impl ClipboardApp {
             let prev = self.settings_panel_collapsed[3];
             let mut expanded = !prev;
             let theme = self.theme.clone();
-            macos_collapsible_group(ui, "界面设置", &mut expanded, &theme, |ui| {
-                ui.label("主题模式");
+            macos_collapsible_group(ui, t!("settings.appearance.title"), &mut expanded, &theme, |ui| {
+                ui.label(t!("settings.appearance.theme_mode"));
                 ui.horizontal(|ui| {
-                    let modes = [("跟随系统", "system"), ("浅色", "light"), ("深色", "dark")];
+                    let modes = [(t!("settings.appearance.theme_follow_system"), "system"), (t!("settings.appearance.theme_light"), "light"), (t!("settings.appearance.theme_dark"), "dark")];
                     for (label, value) in modes {
-                        if filter_chip(ui, label, self.color_mode == value, &self.theme).clicked() {
+                        if filter_chip(ui, label.as_ref(), self.color_mode == value, &self.theme).clicked() {
                             self.color_mode = value.to_string();
                             self.theme = resolve_theme(&self.color_mode);
                             self.configure_style(ctx);
@@ -3633,35 +3635,35 @@ impl ClipboardApp {
                     }
                 });
                 ui.add_space(4.0);
-                ui.label("字体");
+                ui.label(t!("settings.appearance.font"));
                 let mut font_changed = false;
                 font_changed |= font_combo_row(
                     ui,
-                    "主要字体",
+                    t!("settings.appearance.primary_font"),
                     &mut self.primary_font,
                     &mut self.primary_font_search,
                     &self.font_choices,
                     AUTO_PRIMARY_FONT_LABEL,
-                    "搜索主要字体...",
+                    t!("settings.appearance.primary_font_search"),
                     &self.theme,
                 );
                 font_changed |= font_combo_row(
                     ui,
-                    "备用字体",
+                    t!("settings.appearance.fallback_font"),
                     &mut self.fallback_font,
                     &mut self.fallback_font_search,
                     &self.font_choices,
                     AUTO_FALLBACK_FONT_LABEL,
-                    "搜索备用字体...",
+                    t!("settings.appearance.fallback_font_search"),
                     &self.theme,
                 );
                 ui.vertical(|ui| {
-                    if ui.button("重新扫描系统字体").clicked() {
+                    if ui.button(t!("settings.appearance.rescan_fonts")).clicked() {
                         self.font_choices = discover_system_font_names();
-                        self.status = format!("已扫描 {} 个系统字体", self.font_choices.len());
+                        self.status = format!("{}: {}", t!("settings.appearance.rescan_fonts_done"), self.font_choices.len());
                     }
                     ui.label(
-                        egui::RichText::new("备用字体会放在 fallback 链末尾；主要字体缺字时自动回退。")
+                        egui::RichText::new(t!("settings.appearance.fallback_font_hint"))
                             .color(self.theme.muted),
                     );
                 });
@@ -3674,41 +3676,41 @@ impl ClipboardApp {
                 }
                 ui.add_space(4.0);
                 if ui.horizontal(|ui| {
-                    ui.label("显示敏感内容（Ctrl+H）");
+                    ui.label(t!("settings.appearance.show_sensitive"));
                     macos_toggle(ui, &mut self.show_sensitive, &self.theme)
                 }).inner.changed()
                 {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("显示详情/标签侧栏");
+                    ui.label(t!("settings.appearance.show_detail_panel"));
                     macos_toggle(ui, &mut self.show_detail_panel, &self.theme)
                 }).inner.changed()
                 {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("显示应用边框");
+                    ui.label(t!("settings.appearance.show_app_border"));
                     macos_toggle(ui, &mut self.show_app_border, &self.theme)
                 }).inner.changed() {
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("窗口置顶");
+                    ui.label(t!("settings.appearance.window_pin"));
                     macos_toggle(ui, &mut self.window_pinned, &self.theme)
                 }).inner.changed() {
                     self.apply_window_level(ctx);
                     self.persist_preferences();
                 }
                 if ui.horizontal(|ui| {
-                    ui.label("呼出时跟随鼠标位置");
+                    ui.label(t!("settings.appearance.follow_mouse"));
                     macos_toggle(ui, &mut self.follow_mouse, &self.theme)
                 }).inner.changed() {
                     self.persist_preferences();
                 }
                 let mut edge_docking_enabled = self.edge_docking != DockMode::Off;
                 if ui.horizontal(|ui| {
-                    ui.label("边缘停靠隐藏");
+                    ui.label(t!("settings.appearance.edge_docking"));
                     macos_toggle(ui, &mut edge_docking_enabled, &self.theme)
                 }).inner.changed() {
                     self.edge_docking = if edge_docking_enabled {
@@ -3721,16 +3723,16 @@ impl ClipboardApp {
                     }
                     self.persist_preferences();
                 }
-                ui.label(egui::RichText::new("开启后会按窗口位置自动吸附到左、右、上屏幕边缘，并留下可见边条。" ).color(self.theme.muted));
+                ui.label(egui::RichText::new(t!("settings.appearance.edge_docking_hint") ).color(self.theme.muted));
                 ui.add_space(4.0);
-                ui.label("表面不透明度");
+                ui.label(t!("settings.appearance.surface_opacity"));
                 let mut opacity_f32 = self.surface_opacity as f32;
                 if macos_range_slider(ui, &mut opacity_f32, 0.0..=100.0, &self.theme).changed() {
                     self.surface_opacity = opacity_f32 as u8;
                     self.configure_style(ctx);
                     self.persist_preferences();
                 }
-                ui.label("左键点击/Enter：复制并粘贴；右键点击：带格式复制并粘贴；Delete 删除；↑/↓ 切换选中。");
+                ui.label(t!("settings.appearance.interaction_hint"));
             });
             if expanded == prev {
                 self.settings_panel_collapsed[3] = !expanded;
@@ -3742,8 +3744,8 @@ impl ClipboardApp {
             let prev = self.settings_panel_collapsed[4];
             let mut expanded = !prev;
             let theme = self.theme.clone();
-            macos_collapsible_group(ui, "默认打开程序", &mut expanded, &theme, |ui| {
-                ui.label(egui::RichText::new("自动扫描 XDG .desktop 应用；选择\u{201c}系统默认\u{201d}时使用 xdg-open/open crate。").color(self.theme.muted));
+            macos_collapsible_group(ui, t!("settings.default_app.title"), &mut expanded, &theme, |ui| {
+                ui.label(egui::RichText::new(t!("settings.default_app.hint")).color(self.theme.muted));
                 let mut changed = false;
                 changed |= app_combo_row(ui, "TEXT", &mut self.default_text_app, &mut self.text_app_search, &self.text_app_choices, &self.theme);
                 changed |= app_combo_row(ui, "URL", &mut self.default_url_app, &mut self.url_app_search, &self.url_app_choices, &self.theme);
@@ -3751,14 +3753,14 @@ impl ClipboardApp {
                 changed |= app_combo_row(ui, "FILE", &mut self.default_file_app, &mut self.file_app_search, &self.file_app_choices, &self.theme);
                 changed |= app_combo_row(ui, "IMAGE", &mut self.default_image_app, &mut self.image_app_search, &self.image_app_choices, &self.theme);
                 changed |= app_combo_row(ui, "VIDEO", &mut self.default_video_app, &mut self.video_app_search, &self.video_app_choices, &self.theme);
-                if ui.button("重新扫描应用").clicked() {
+                if ui.button(t!("settings.default_app.rescan")).clicked() {
                     self.text_app_choices = platform::discover_apps_for_mime("text/plain");
                     self.url_app_choices = platform::discover_apps_for_mime("x-scheme-handler/http");
                     self.code_app_choices = platform::discover_apps_for_mime("text/plain");
                     self.file_app_choices = platform::discover_apps_for_mime("application/octet-stream");
                     self.image_app_choices = platform::discover_apps_for_mime("image/png");
                     self.video_app_choices = platform::discover_apps_for_mime("video/mp4");
-                    self.status = "已重新扫描默认应用列表".to_string();
+                    self.status = t!("settings.default_app.rescan_done").to_string();
                 }
                 if changed {
                     self.persist_preferences();
@@ -3774,9 +3776,9 @@ impl ClipboardApp {
             let prev = self.settings_panel_collapsed[5];
             let mut expanded = !prev;
             let theme = self.theme.clone();
-            macos_collapsible_group(ui, "标签目录", &mut expanded, &theme, |ui| {
+            macos_collapsible_group(ui, t!("settings.tags.title"), &mut expanded, &theme, |ui| {
                 if !self.tag_manager_enabled {
-                    ui.label(egui::RichText::new("标签管理已关闭，目录不会显示或编辑；已有条目标签保留在数据库中。").color(self.theme.muted));
+                    ui.label(egui::RichText::new(t!("settings.tags.manager_closed_hint")).color(self.theme.muted));
                     return;
                 }
 
@@ -3801,7 +3803,7 @@ impl ClipboardApp {
                                     .add_sized(
                                         [ui.available_width().max(80.0), 24.0],
                                         egui::Button::new(
-                                            egui::RichText::new("＋ 新增标签").size(11.0),
+                                            egui::RichText::new(t!("settings.tags.new_tag")).size(11.0),
                                         )
                                         .rounding(egui::Rounding::same(6.0)),
                                     )
@@ -3818,7 +3820,7 @@ impl ClipboardApp {
                                             egui::TextEdit::singleline(
                                                 &mut self.new_tag_input,
                                             )
-                                            .hint_text("标签名")
+                                            .hint_text(t!("settings.tags.tag_name_hint"))
                                             .desired_width(input_width),
                                         );
                                         let enter = response.lost_focus()
@@ -3827,7 +3829,7 @@ impl ClipboardApp {
                                             .add_sized(
                                                 [38.0, 22.0],
                                                 egui::Button::new(
-                                                    egui::RichText::new("添加").size(10.5),
+                                                    egui::RichText::new(t!("settings.tags.add_button")).size(10.5),
                                                 )
                                                 .rounding(egui::Rounding::same(4.0)),
                                             )
@@ -3844,7 +3846,7 @@ impl ClipboardApp {
                                 egui::ScrollArea::vertical().show(ui, |ui| {
                                         if self.saved_tags.is_empty() {
                                             ui.label(
-                                                egui::RichText::new("暂无标签")
+                                                egui::RichText::new(t!("settings.tags.no_tags"))
                                                     .size(11.0)
                                                     .color(self.theme.muted),
                                             );
@@ -3915,7 +3917,9 @@ impl ClipboardApp {
                                         .unwrap_or(0);
                                     ui.label(
                                         egui::RichText::new(format!(
-                                            "关联记录：{count} 条"
+                                            "{}: {}",
+                                            t!("settings.tags.related_records"),
+                                            count
                                         ))
                                         .size(11.5)
                                         .color(self.theme.muted),
@@ -3923,7 +3927,7 @@ impl ClipboardApp {
                                     ui.add_space(8.0);
 
                                     ui.label(
-                                        egui::RichText::new("标签颜色")
+                                        egui::RichText::new(t!("settings.tags.tag_color"))
                                             .size(11.0)
                                             .color(self.theme.muted),
                                     );
@@ -3957,7 +3961,7 @@ impl ClipboardApp {
                                                 )
                                         {
                                             self.status =
-                                                format!("更新颜色失败: {err}");
+                                                format!("{}: {err}", t!("settings.tags.update_color_failed"));
                                         }
                                     });
 
@@ -3966,7 +3970,7 @@ impl ClipboardApp {
                                         .add_sized(
                                             [ui.available_width().max(72.0), 24.0],
                                             egui::Button::new(
-                                                egui::RichText::new("加入当前条目标签")
+                                                egui::RichText::new(t!("settings.tags.add_to_current"))
                                                     .size(11.0),
                                             )
                                             .rounding(egui::Rounding::same(6.0)),
@@ -3981,7 +3985,7 @@ impl ClipboardApp {
                                         .add_sized(
                                             [ui.available_width().max(72.0), 24.0],
                                             egui::Button::new(
-                                                egui::RichText::new("从目录移除")
+                                                egui::RichText::new(t!("settings.tags.remove_from_catalog"))
                                                     .size(11.0)
                                                     .color(self.theme.danger),
                                             )
@@ -3995,7 +3999,7 @@ impl ClipboardApp {
                                     }
                                 } else {
                                     ui.label(
-                                        egui::RichText::new("← 点击左侧标签查看详情")
+                                        egui::RichText::new(t!("settings.tags.click_left_hint"))
                                             .size(12.0)
                                             .color(self.theme.muted),
                                     );
@@ -4014,8 +4018,8 @@ impl ClipboardApp {
             let prev = self.settings_panel_collapsed[6];
             let mut expanded = !prev;
             let theme = self.theme.clone();
-            macos_collapsible_group(ui, "数据管理", &mut expanded, &theme, |ui| {
-                ui.label("当前数据库");
+            macos_collapsible_group(ui, t!("settings.data.title"), &mut expanded, &theme, |ui| {
+                ui.label(t!("settings.data.current_database"));
                 egui::Frame::none()
                     .fill(self.theme.data_bg)
                     .stroke(egui::Stroke::new(1.0, self.theme.data_border))
@@ -4029,7 +4033,7 @@ impl ClipboardApp {
                         );
                     });
                 ui.add_space(6.0);
-                ui.label("重启后保存路径");
+                ui.label(t!("settings.data.restart_save_path"));
                 egui::Frame::none()
                     .fill(self.theme.glass_bg)
                     .stroke(egui::Stroke::new(1.0, self.theme.glass_border))
@@ -4044,7 +4048,7 @@ impl ClipboardApp {
                     });
                 ui.horizontal(|ui| {
                     if ui
-                        .add(egui::Button::new("选择并确认保存路径…").rounding(egui::Rounding::same(8.0)))
+                        .add(egui::Button::new(t!("settings.data.select_save_path")).rounding(egui::Rounding::same(8.0)))
                         .clicked()
                     {
                         let current = PathBuf::from(self.database_path_input.trim());
@@ -4054,34 +4058,34 @@ impl ClipboardApp {
                                 match Storage::write_redirect_path(path.clone()) {
                                     Ok(()) => {
                                         self.database_path_input = path.display().to_string();
-                                        self.status = "数据库保存路径已更新，重启后生效".to_string();
+                                        self.status = t!("settings.data.save_path_updated").to_string();
                                     }
-                                    Err(err) => self.status = format!("保存数据库路径失败: {err}"),
+                                    Err(err) => self.status = format!("{}: {err}", t!("settings.data.save_path_failed")),
                                 }
                             }
                             Ok(None) => {}
                             Err(err) => self.status = err,
                         }
                     }
-                    if ui.button("恢复默认位置").clicked() {
+                    if ui.button(t!("settings.data.restore_default")).clicked() {
                         let path = Storage::default_path();
                         match Storage::write_redirect_path(path.clone()) {
                             Ok(()) => {
                                 self.database_path_input = path.display().to_string();
-                                self.status = "已恢复默认数据库保存路径，重启后生效".to_string();
+                                self.status = t!("settings.data.restore_default_done").to_string();
                             }
-                            Err(err) => self.status = format!("恢复默认位置失败: {err}"),
+                            Err(err) => self.status = format!("{}: {err}", t!("settings.data.restore_default_failed")),
                         }
                     }
                 });
-                ui.label(egui::RichText::new("数据库连接已打开，新的保存路径会在重启后生效；也可用 --db-path 或 TIEZ_SLIM_LINUX_DB_PATH 临时覆盖。" ).color(self.theme.muted));
-                if ui.button("清空非置顶历史").clicked() {
+                ui.label(egui::RichText::new(t!("settings.data.db_hint") ).color(self.theme.muted));
+                if ui.button(t!("history.clear_unpinned_history")).clicked() {
                     match self.storage.clear_unpinned() {
                         Ok(()) => {
-                            self.status = "已清空非置顶记录".to_string();
+                            self.status = t!("history.cleared_unpinned").to_string();
                             self.refresh_entries();
                         }
-                        Err(err) => self.status = format!("清空失败: {err}"),
+                        Err(err) => self.status = format!("{}: {err}", t!("history.clear_failed")),
                     }
                 }
             });
@@ -4099,14 +4103,14 @@ impl ClipboardApp {
                 let total_width = feedback_width + button_gap + reset_width;
                 ui.add_space(((ui.available_width() - total_width) * 0.5).max(0.0));
 
-                if settings_footer_button(ui, "问题反馈", &self.theme, feedback_width).clicked() {
+                if settings_footer_button(ui, t!("settings.feedback"), &self.theme, feedback_width).clicked() {
                     match open::that(APP_REPO_URL) {
-                        Ok(()) => self.status = "已调用系统默认浏览器".to_string(),
-                        Err(err) => self.status = format!("打开浏览器失败: {err}"),
+                        Ok(()) => self.status = t!("settings.feedback_opened").to_string(),
+                        Err(err) => self.status = format!("{}: {err}", t!("settings.feedback_failed")),
                     }
                 }
                 ui.add_space(button_gap);
-                if settings_footer_button(ui, "恢复初始设置", &self.theme, reset_width).clicked() {
+                if settings_footer_button(ui, t!("settings.reset"), &self.theme, reset_width).clicked() {
                     let window_pinned = self.window_pinned;
                     let show_sensitive = self.show_sensitive;
                     let preferences = AppPreferences {
@@ -4163,10 +4167,11 @@ fn apply_settings_widget_rounding(ui: &mut egui::Ui, radius: f32) {
 
 fn settings_footer_button(
     ui: &mut egui::Ui,
-    label: &str,
+    label: impl AsRef<str>,
     theme: &MacosTokens,
     width: f32,
 ) -> egui::Response {
+    let label = label.as_ref();
     ui.add(
         egui::Button::new(
             egui::RichText::new(label)
@@ -4192,17 +4197,18 @@ fn hotkey_config_from_preferences(preferences: &AppPreferences) -> platform::Hot
 
 fn hotkey_record_row(
     ui: &mut egui::Ui,
-    label: &str,
+    label: impl AsRef<str>,
     value: &str,
     recording: bool,
     mut actions: impl FnMut(&mut egui::Ui),
 ) {
+    let label = label.as_ref();
     ui.horizontal_wrapped(|ui| {
         ui.label(label);
         let display = if recording {
-            "录制中…按键或鼠标中键".to_string()
+            t!("settings.hotkey.recording_active").to_string()
         } else if value.trim().is_empty() {
-            "未设置".to_string()
+            t!("settings.hotkey.not_set").to_string()
         } else {
             value.lines().map(str::trim).collect::<Vec<_>>().join(" / ")
         };
@@ -4213,13 +4219,13 @@ fn hotkey_record_row(
 
 fn hotkey_single_record_row(
     ui: &mut egui::Ui,
-    label: &str,
+    label: impl AsRef<str>,
     value: &str,
     recording: bool,
     mut start_recording: impl FnMut(),
 ) {
     hotkey_record_row(ui, label, value, recording, |ui| {
-        if ui.button("录制").clicked() {
+        if ui.button(t!("common.recording")).clicked() {
             start_recording();
         }
     });
@@ -4265,7 +4271,7 @@ fn removable_hotkey_chip(ui: &mut egui::Ui, hotkey: &str, theme: &MacosTokens) -
             theme.fg
         },
     );
-    response.on_hover_text("删除这条快捷键")
+    response.on_hover_text(t!("settings.hotkey.delete_tooltip"))
 }
 
 fn merge_keyboard_modifiers(modifiers: egui::Modifiers) -> platform::KeyboardModifiers {
@@ -4380,10 +4386,10 @@ struct DropdownOption {
 }
 
 impl DropdownOption {
-    fn borrowed(value: &str, label: &str) -> Self {
+    fn borrowed(value: &str, label: impl AsRef<str>) -> Self {
         Self {
             value: value.to_string(),
-            label: label.to_string(),
+            label: label.as_ref().to_string(),
         }
     }
 
@@ -4394,13 +4400,15 @@ impl DropdownOption {
 
 fn searchable_combo_row(
     ui: &mut egui::Ui,
-    label: &str,
+    label: impl AsRef<str>,
     selected: &mut String,
     search: &mut String,
     options: &[DropdownOption],
-    search_hint: &str,
+    search_hint: impl AsRef<str>,
     theme: &MacosTokens,
 ) -> bool {
+    let label = label.as_ref();
+    let search_hint = search_hint.as_ref();
     let before = selected.clone();
     ui.vertical(|ui| {
         ui.label(label);
@@ -4512,7 +4520,7 @@ fn searchable_combo_row(
                                 shown += 1;
                                 if shown >= 80 {
                                     ui.label(
-                                        egui::RichText::new("继续输入可缩小结果...")
+                                        egui::RichText::new(t!("search.fuzzy_hint"))
                                             .italics()
                                             .color(theme.muted),
                                     );
@@ -4521,7 +4529,7 @@ fn searchable_combo_row(
                             }
                             if shown == 0 {
                                 ui.label(
-                                    egui::RichText::new("未找到匹配项")
+                                    egui::RichText::new(t!("search.no_match"))
                                         .italics()
                                         .color(theme.muted),
                                 );
@@ -4596,31 +4604,31 @@ fn emoji_total_pages(count: usize) -> usize {
 
 fn app_combo_row(
     ui: &mut egui::Ui,
-    label: &str,
+    label: impl AsRef<str>,
     selected: &mut String,
     search: &mut String,
     choices: &[platform::AppChoice],
     theme: &MacosTokens,
 ) -> bool {
     let mut options = Vec::with_capacity(choices.len() + 1);
-    options.push(DropdownOption::borrowed("", "系统默认"));
+    options.push(DropdownOption::borrowed("", t!("settings.default_app.system_default")));
     options.extend(choices.iter().map(|choice| {
         DropdownOption::owned(
             choice.command.clone(),
             format!("{}  ({})", choice.name, choice.command),
         )
     }));
-    searchable_combo_row(ui, label, selected, search, &options, "搜索应用...", theme)
+    searchable_combo_row(ui, label, selected, search, &options, t!("settings.default_app.search_hint"), theme)
 }
 
 fn font_combo_row(
     ui: &mut egui::Ui,
-    label: &str,
+    label: impl AsRef<str>,
     selected: &mut String,
     search: &mut String,
     choices: &[String],
     automatic_label: &str,
-    search_hint: &str,
+    search_hint: impl AsRef<str>,
     theme: &MacosTokens,
 ) -> bool {
     let mut options = Vec::with_capacity(choices.len() + 1);
@@ -4640,14 +4648,14 @@ fn write_text_to_temp_file(content: &str, extension: &str) -> Result<PathBuf, St
         timestamp_millis(),
         extension
     ));
-    fs::write(&path, content).map_err(|err| format!("写入临时文件失败: {err}"))?;
+    fs::write(&path, content).map_err(|err| format!("{}: {err}", t!("error.temp_file_write_failed")))?;
     Ok(path)
 }
 
 fn write_data_url_to_temp_file(content: &str, extension: &str) -> Result<PathBuf, String> {
     let (_, data) = content
         .split_once(',')
-        .ok_or_else(|| "图片数据 URL 格式无效".to_string())?;
+        .ok_or_else(|| t!("error.temp_image_invalid_url").to_string())?;
     let bytes = decode_base64(data)?;
     let dir = temp_open_dir()?;
     let path = dir.join(format!(
@@ -4655,14 +4663,14 @@ fn write_data_url_to_temp_file(content: &str, extension: &str) -> Result<PathBuf
         timestamp_millis(),
         extension
     ));
-    fs::write(&path, bytes).map_err(|err| format!("写入临时图片失败: {err}"))?;
+    fs::write(&path, bytes).map_err(|err| format!("{}: {err}", t!("error.temp_image_write_failed")))?;
     Ok(path)
 }
 
 fn temp_open_dir() -> Result<PathBuf, String> {
     let base = dirs::cache_dir().unwrap_or_else(std::env::temp_dir);
     let dir = base.join(APP_ID).join("open");
-    fs::create_dir_all(&dir).map_err(|err| format!("创建临时目录失败: {err}"))?;
+    fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", t!("error.temp_dir_create_failed")))?;
     Ok(dir)
 }
 
@@ -4684,7 +4692,7 @@ fn pick_database_save_dir_with_dialog(current: &Path) -> Result<Option<PathBuf>,
     match Command::new("zenity")
         .arg("--file-selection")
         .arg("--directory")
-        .arg("--title=选择数据库保存路径")
+        .arg(format!("--title={}", t!("error.db_select_title")))
         .arg(format!("--filename={}", current_dir.display()))
         .output()
     {
@@ -4706,7 +4714,7 @@ fn pick_database_save_dir_with_dialog(current: &Path) -> Result<Option<PathBuf>,
             Ok((!value.is_empty()).then(|| PathBuf::from(value)))
         }
         Ok(_) => Ok(None),
-        Err(_) => Err("未找到可用的目录选择器：请安装 zenity 或 kdialog".to_string()),
+        Err(_) => Err(t!("error.dialog_not_found").to_string()),
     }
 }
 
@@ -4835,7 +4843,7 @@ fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
             b'0'..=b'9' => byte - b'0' + 52,
             b'+' => 62,
             b'/' => 63,
-            _ => return Err("图片 base64 数据无效".to_string()),
+            _ => return Err(t!("error.base64_image_invalid").to_string()),
         } as u32;
         buffer = (buffer << 6) | value;
         bits += 6;
@@ -4863,8 +4871,8 @@ fn pick_emoji_favorite_files_with_dialog() -> Result<Vec<PathBuf>, String> {
             "--file-selection",
             "--multiple",
             "--separator=\n",
-            "--title=选择表情包图片",
-            "--file-filter=图片 | *.png *.jpg *.jpeg *.webp *.gif *.bmp",
+            &format!("--title={}", t!("emoji.select_files_title")),
+            &format!("--file-filter={}", t!("emoji.select_files_filter")),
         ])
         .output();
     if let Ok(output) = zenity {
@@ -4887,7 +4895,7 @@ fn pick_emoji_favorite_files_with_dialog() -> Result<Vec<PathBuf>, String> {
         Ok(output) if output.status.success() => Ok(parse_dialog_paths(&output.stdout)),
         Ok(output) if output.stdout.is_empty() && output.stderr.is_empty() => Ok(Vec::new()),
         Ok(output) => Err(String::from_utf8_lossy(&output.stderr).trim().to_string()),
-        Err(err) => Err(format!("无法打开图片选择器: {err}")),
+        Err(err) => Err(format!("{}: {err}", t!("emoji.file_picker_failed"))),
     }
 }
 
@@ -4902,16 +4910,16 @@ fn parse_dialog_paths(stdout: &[u8]) -> Vec<PathBuf> {
 
 fn save_emoji_favorite_file(source: &Path, dir: &Path) -> Result<PathBuf, String> {
     if !is_supported_emoji_favorite_file(source) {
-        return Err("仅支持 png/jpg/jpeg/webp/gif/bmp 表情包图片".to_string());
+        return Err(t!("emoji.file_not_supported").to_string());
     }
-    let metadata = fs::metadata(source).map_err(|err| format!("读取表情包文件失败: {err}"))?;
+    let metadata = fs::metadata(source).map_err(|err| format!("{}: {err}", t!("emoji.file_read_failed")))?;
     if !metadata.is_file() {
-        return Err("表情包收藏必须是普通文件".to_string());
+        return Err(t!("emoji.file_must_be_file").to_string());
     }
     if metadata.len() > EMOJI_FAVORITE_MAX_BYTES {
-        return Err("表情包文件超过 32MiB 限制".to_string());
+        return Err(t!("emoji.file_too_large").to_string());
     }
-    let bytes = fs::read(source).map_err(|err| format!("读取表情包文件失败: {err}"))?;
+    let bytes = fs::read(source).map_err(|err| format!("{}: {err}", t!("emoji.file_read_failed")))?;
     let ext = source
         .extension()
         .and_then(|ext| ext.to_str())
@@ -4927,12 +4935,12 @@ fn save_emoji_favorite_bytes(
     dir: &Path,
 ) -> Result<PathBuf, String> {
     if bytes.len() as u64 > EMOJI_FAVORITE_MAX_BYTES {
-        return Err("表情包文件超过 32MiB 限制".to_string());
+        return Err(t!("emoji.file_too_large").to_string());
     }
     let ext = emoji_favorite_ext_from_mime(mime)
         .or_else(|| name.and_then(|name| emoji_favorite_ext_from_path(Path::new(name))))
         .or_else(|| emoji_favorite_ext_from_bytes(bytes))
-        .ok_or_else(|| "仅支持 png/jpg/jpeg/webp/gif/bmp 表情包图片".to_string())?;
+        .ok_or_else(|| t!("emoji.file_not_supported").to_string())?;
     save_emoji_favorite_bytes_with_ext(bytes, &ext, dir)
 }
 
@@ -4944,10 +4952,10 @@ fn save_emoji_favorite_bytes_with_ext(
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let digest = format!("{:x}", hasher.finalize());
-    fs::create_dir_all(dir).map_err(|err| format!("创建表情包收藏目录失败: {err}"))?;
+    fs::create_dir_all(dir).map_err(|err| format!("{}: {err}", t!("emoji.dir_create_failed")))?;
     let target = dir.join(format!("fav_{digest}.{ext}"));
     if !target.exists() {
-        fs::write(&target, bytes).map_err(|err| format!("保存表情包收藏失败: {err}"))?;
+        fs::write(&target, bytes).map_err(|err| format!("{}: {err}", t!("emoji.save_favorite_failed")))?;
     }
     Ok(target)
 }
@@ -4955,15 +4963,15 @@ fn save_emoji_favorite_bytes_with_ext(
 fn decode_image_data_url(data_url: &str) -> Result<(String, Vec<u8>), String> {
     let (meta, payload) = data_url
         .split_once(',')
-        .ok_or_else(|| "图片 data URL 格式无效".to_string())?;
+        .ok_or_else(|| t!("emoji.data_url_invalid").to_string())?;
     let mime = meta
         .strip_prefix("data:")
         .and_then(|value| value.split(';').next())
         .filter(|value| value.starts_with("image/"))
-        .ok_or_else(|| "仅支持图片 data URL".to_string())?
+        .ok_or_else(|| t!("emoji.data_url_not_image").to_string())?
         .to_string();
     if !meta.contains(";base64") {
-        return Err("仅支持 base64 图片 data URL".to_string());
+        return Err(t!("emoji.data_url_not_base64").to_string());
     }
     let bytes = decode_base64(payload)?;
     Ok((mime, bytes))
@@ -4975,7 +4983,7 @@ fn list_emoji_favorite_files(dir: &Path) -> Result<Vec<PathBuf>, String> {
     };
     let mut paths = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|err| format!("读取表情包收藏目录失败: {err}"))?;
+        let entry = entry.map_err(|err| format!("{}: {err}", t!("emoji.dir_read_failed")))?;
         let path = entry.path();
         if is_supported_emoji_favorite_file(&path)
             && fs::metadata(&path)
@@ -4998,7 +5006,7 @@ fn remove_managed_emoji_favorite_file(path: &str, dir: &Path) -> Result<(), Stri
         return Ok(());
     };
     if canonical.starts_with(managed_dir) {
-        fs::remove_file(canonical).map_err(|err| format!("删除表情包收藏失败: {err}"))?;
+        fs::remove_file(canonical).map_err(|err| format!("{}: {err}", t!("emoji.delete_failed")))?;
     }
     Ok(())
 }
@@ -5048,7 +5056,8 @@ fn short_path_label(path: &str) -> String {
         .to_string()
 }
 
-fn page_title(ui: &mut egui::Ui, title: &str, theme: &MacosTokens) -> egui::Response {
+fn page_title(ui: &mut egui::Ui, title: impl AsRef<str>, theme: &MacosTokens) -> egui::Response {
+    let title = title.as_ref();
     egui::Frame::none()
         .fill(theme.card)
         .rounding(egui::Rounding::same(8.0))
@@ -5124,7 +5133,7 @@ impl eframe::App for ClipboardApp {
                     ui.label(egui::RichText::new(&self.status).color(self.theme.muted));
                     ui.separator();
                     ui.label(
-                        egui::RichText::new(format!("显示 {} 条", self.entries.len()))
+                        egui::RichText::new(t!("history.count", count = self.entries.len()))
                             .color(self.theme.muted),
                     );
                 });
@@ -5398,7 +5407,7 @@ fn search_box(
                 [width.max(80.0) - 16.0, 24.0],
                 egui::TextEdit::singleline(query)
                     .font(egui::TextStyle::Body)
-                    .hint_text("搜索...")
+                    .hint_text(t!("search.placeholder"))
                     .frame(false),
             )
         })
@@ -5427,10 +5436,11 @@ fn tag_chip(ui: &mut egui::Ui, tag: &str, theme: &MacosTokens) {
 
 fn filter_chip(
     ui: &mut egui::Ui,
-    label: &str,
+    label: impl AsRef<str>,
     selected: bool,
     theme: &MacosTokens,
 ) -> egui::Response {
+    let label = label.as_ref();
     let display_label = clipped_chip_label(label, 18);
     let fill = if selected {
         theme.accent_soft
@@ -5542,9 +5552,10 @@ fn symbol_button(ui: &mut egui::Ui, symbol: &str, theme: &MacosTokens) -> egui::
 fn toolbar_button(
     ui: &mut egui::Ui,
     label: &str,
-    tooltip: &str,
+    tooltip: impl AsRef<str>,
     theme: &MacosTokens,
 ) -> egui::Response {
+    let tooltip = tooltip.as_ref();
     let response = if let Some(icon) = ToolbarIcon::from_label(label) {
         vector_toolbar_button(ui, icon, theme)
     } else {
@@ -5575,17 +5586,19 @@ enum ToolbarIcon {
 
 impl ToolbarIcon {
     fn from_label(label: &str) -> Option<Self> {
+        let clear_label = t!("search.clear");
+        let open_label = t!("common.open");
         match label {
             "‹" => Some(Self::Back),
             "×" => Some(Self::Close),
             "⚙" => Some(Self::Settings),
             "☺" | "😀" => Some(Self::Emoji),
             "∑" => Some(Self::Symbol),
-            "⌫" | "清" => Some(Self::Clear),
             "📌" | "⚐" => Some(Self::Pin),
             "📍" | "⚑" => Some(Self::Unpin),
-            "↗" | "打开" => Some(Self::Open),
             "DEV" => Some(Self::Dev),
+            _ if label == clear_label.as_ref() => Some(Self::Clear),
+            _ if label == open_label.as_ref() => Some(Self::Open),
             _ => None,
         }
     }
@@ -5851,7 +5864,8 @@ fn sensitive_badge(ui: &mut egui::Ui, theme: &MacosTokens) {
         });
 }
 
-fn clipped_chip_label(label: &str, max_chars: usize) -> String {
+fn clipped_chip_label(label: impl AsRef<str>, max_chars: usize) -> String {
+    let label = label.as_ref();
     let char_count = label.chars().count();
     if char_count <= max_chars {
         return label.to_string();
@@ -5860,7 +5874,8 @@ fn clipped_chip_label(label: &str, max_chars: usize) -> String {
     format!("{}…", label.chars().take(keep).collect::<String>())
 }
 
-fn thumbnail_placeholder(ui: &mut egui::Ui, label: &str, theme: &MacosTokens) {
+fn thumbnail_placeholder(ui: &mut egui::Ui, label: impl AsRef<str>, theme: &MacosTokens) {
+    let label = label.as_ref();
     egui::Frame::none()
         .fill(theme.data_bg)
         .stroke(egui::Stroke::new(2.0, theme.data_border))
@@ -5940,7 +5955,7 @@ fn draw_file_preview(ui: &mut egui::Ui, entry: &ClipboardEntry, theme: &MacosTok
         .filter(|line| !line.is_empty())
         .collect::<Vec<_>>();
     if paths.is_empty() {
-        ui.label(egui::RichText::new("没有可预览的文件路径").color(theme.muted));
+        ui.label(egui::RichText::new(t!("preview.no_file_path")).color(theme.muted));
         return;
     }
     for (index, path) in paths.iter().take(24).enumerate() {
@@ -5977,7 +5992,7 @@ fn draw_file_preview(ui: &mut egui::Ui, entry: &ClipboardEntry, theme: &MacosTok
     }
     if paths.len() > 24 {
         ui.label(
-            egui::RichText::new(format!("还有 {} 个文件，已折叠显示", paths.len() - 24))
+            egui::RichText::new(t!("preview.files_collapsed", count = paths.len() - 24))
                 .italics()
                 .color(theme.muted),
         );
@@ -6166,7 +6181,7 @@ fn decode_preview_image(bytes: &[u8]) -> Option<image::DynamicImage> {
 fn masked_preview(value: &str) -> String {
     let chars = value.chars().count();
     let prefix = value.chars().take(4).collect::<String>();
-    format!("{prefix}...  ({chars} 字符)")
+    format!("{prefix}...  ({chars} {})", t!("detail.masked_suffix"))
 }
 
 fn stat_grid(ui: &mut egui::Ui, entry: &ClipboardEntry, theme: &MacosTokens) {
@@ -6174,33 +6189,36 @@ fn stat_grid(ui: &mut egui::Ui, entry: &ClipboardEntry, theme: &MacosTokens) {
         .num_columns(2)
         .spacing([16.0, 8.0])
         .show(ui, |ui| {
-            muted(ui, "来源", theme);
+            muted(ui, t!("detail.source"), theme);
             ui.label(&entry.source_app);
             ui.end_row();
-            muted(ui, "时间", theme);
+            muted(ui, t!("detail.time"), theme);
             ui.label(entry.formatted_time());
             ui.end_row();
-            muted(ui, "使用次数", theme);
+            muted(ui, t!("detail.use_count"), theme);
             ui.label(entry.use_count.to_string());
             ui.end_row();
-            muted(ui, "字符数", theme);
+            muted(ui, t!("detail.char_count"), theme);
             ui.label(entry.content.chars().count().to_string());
             ui.end_row();
-            muted(ui, "状态", theme);
+            muted(ui, t!("detail.status"), theme);
             ui.label(if entry.is_pinned {
-                "已置顶"
+                t!("detail.status_pinned")
             } else {
-                "普通"
+                t!("detail.status_normal")
             });
             ui.end_row();
         });
 }
 
-fn muted(ui: &mut egui::Ui, text: &str, theme: &MacosTokens) {
+fn muted(ui: &mut egui::Ui, text: impl AsRef<str>, theme: &MacosTokens) {
+    let text = text.as_ref();
     ui.label(egui::RichText::new(text).color(theme.muted));
 }
 
-fn empty_state(ui: &mut egui::Ui, title: &str, body: &str, theme: &MacosTokens) {
+fn empty_state(ui: &mut egui::Ui, title: impl AsRef<str>, body: impl AsRef<str>, theme: &MacosTokens) {
+    let title = title.as_ref();
+    let body = body.as_ref();
     ui.vertical_centered_justified(|ui| {
         ui.add_space(80.0);
         ui.label(egui::RichText::new(title).size(18.0).strong());

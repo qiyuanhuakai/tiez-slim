@@ -1,5 +1,6 @@
 use chrono::{DateTime, Local, TimeZone};
 use regex::Regex;
+use rust_i18n::t;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::sync::OnceLock;
@@ -284,7 +285,7 @@ impl ClipboardEntry {
         Some(Self {
             id: 0,
             kind: ClipboardKind::Image,
-            preview: "图片剪贴板内容".to_string(),
+            preview: t!("preview.image_clipboard").to_string(),
             content: data_url,
             html_content: None,
             source_app,
@@ -349,7 +350,7 @@ impl ClipboardEntry {
         let preview = if normalized.len() == 1 {
             normalized[0].clone()
         } else {
-            format!("{} 个文件", normalized.len())
+            t!("preview.files_count", count = normalized.len()).to_string()
         };
 
         Some(Self {

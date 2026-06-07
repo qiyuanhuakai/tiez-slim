@@ -4,6 +4,7 @@ use crate::platform::{
     PlatformCapabilities, ScreenGeometry, TrayHandle,
 };
 use crossbeam_channel::Sender;
+use rust_i18n::t;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
@@ -87,18 +88,18 @@ pub fn active_app_name() -> String {
         })
 }
 
-pub fn platform_note() -> &'static str {
-    "Linux 原生模式：支持文本/富文本/图片/文件剪贴板历史、X11 可配置全局热键、系统托盘、边缘停靠、模拟粘贴、前台窗口识别。"
+pub fn platform_note() -> String {
+    t!("platform.note.linux").to_string()
 }
 
 #[allow(dead_code)]
 pub fn capabilities() -> PlatformCapabilities {
     PlatformCapabilities {
-        active_window: "已接入 X11 _NET_ACTIVE_WINDOW，失败时回退桌面环境名",
-        window_management: "已接入 egui WindowLevel/OuterPosition 置顶、隐藏和边缘停靠",
-        global_hotkey: "已接入 X11 可配置全局热键；Wayland 需后续 evdev/portal 后端",
-        tray: "已接入 ksni StatusNotifierItem 托盘；取决于桌面 SNI/AppIndicator 支持",
-        rich_clipboard: "arboard 已接入文本、text/html、image/png、file_list targets",
+        active_window: t!("platform.capability.active_window_linux").to_string(),
+        window_management: t!("platform.capability.window_mgmt_linux").to_string(),
+        global_hotkey: t!("platform.capability.hotkey_linux").to_string(),
+        tray: t!("platform.capability.tray_linux").to_string(),
+        rich_clipboard: t!("platform.capability.rich_clipboard_linux").to_string(),
     }
 }
 
@@ -112,7 +113,7 @@ pub fn start_hotkey_listener(
         .name("x11-hotkey-listener".to_string())
         .spawn(move || {
             if let Err(err) = hotkey_loop(sender.clone(), ctx.clone(), config, update_receiver) {
-                let _ = sender.send(ClipboardEvent::Status(format!("全局快捷键不可用: {err}")));
+                let _ = sender.send(ClipboardEvent::Status(t!("platform.hotkey_unavailable", err => err).to_string()));
                 ctx.request_repaint();
             }
         })
@@ -138,31 +139,31 @@ pub fn set_autostart(enabled: bool) -> Result<(), String> {
     if enabled {
         let parent = path
             .parent()
-            .ok_or_else(|| "无法定位 autostart 目录".to_string())?;
-        fs::create_dir_all(parent).map_err(|err| format!("创建开机启动目录失败: {err}"))?;
-        let exe = std::env::current_exe().map_err(|err| format!("读取程序路径失败: {err}"))?;
+            .ok_or_else(|| t!("platform.autostart_dir_not_found").to_string())?;
+        fs::create_dir_all(parent).map_err(|err| t!("platform.autostart_dir_create_failed", err => err).to_string())?;
+        let exe = std::env::current_exe().map_err(|err| t!("platform.autostart_exe_read_failed", err => err).to_string())?;
         let exec = desktop_exec_arg(&exe)?;
         let desktop = format!(
             "[Desktop Entry]\nType=Application\nName=tiez-slim\nComment=Native clipboard manager\nExec={exec}\nHidden=false\nNoDisplay=false\nX-GNOME-Autostart-enabled=true\nStartupNotify=false\nStartupWMClass=tiez-slim-linux\n",
         );
-        fs::write(&path, desktop).map_err(|err| format!("写入开机启动配置失败: {err}"))?;
+        fs::write(&path, desktop).map_err(|err| t!("platform.autostart_write_failed", err => err).to_string())?;
     } else if path.exists() {
-        fs::remove_file(&path).map_err(|err| format!("删除开机启动配置失败: {err}"))?;
+        fs::remove_file(&path).map_err(|err| t!("platform.autostart_delete_failed", err => err).to_string())?;
     }
     Ok(())
 }
 
 fn autostart_desktop_path() -> Result<PathBuf, String> {
-    let config_dir = dirs::config_dir().ok_or_else(|| "无法定位 XDG 配置目录".to_string())?;
+    let config_dir = dirs::config_dir().ok_or_else(|| t!("platform.xdg_config_not_found").to_string())?;
     Ok(config_dir.join("autostart").join("tiez-slim-linux.desktop"))
 }
 
 fn desktop_exec_arg(path: &Path) -> Result<String, String> {
     let value = path
         .to_str()
-        .ok_or_else(|| "程序路径不是有效 UTF-8，无法写入开机启动配置".to_string())?;
+        .ok_or_else(|| t!("platform.exe_path_invalid_utf8").to_string())?;
     if value.chars().any(char::is_control) {
-        return Err("程序路径包含控制字符，无法写入开机启动配置".to_string());
+        return Err(t!("platform.exe_path_control_chars").to_string());
     }
     let mut escaped = String::with_capacity(value.len() + 2);
     escaped.push('"');
@@ -227,7 +228,7 @@ pub fn start_tray(
     match start_status_notifier(sender.clone(), ctx.clone()) {
         Ok(handle) => Some(TrayHandle::new(move || handle.shutdown().wait())),
         Err(err) => {
-            let _ = sender.send(ClipboardEvent::Status(format!("系统托盘不可用: {err}")));
+            let _ = sender.send(ClipboardEvent::Status(t!("error.system_tray_unavailable", err => err).to_string()));
             ctx.request_repaint();
             None
         }
@@ -366,7 +367,7 @@ pub fn discover_apps_for_mime(mime: &str) -> Vec<AppChoice> {
         && let Some(choice) = desktop_entries.get(default_id)
     {
         choices.push(AppChoice {
-            name: format!("系统默认：{}", choice.name),
+            name: format!("{}：{}", t!("settings.default_app.system_default"), choice.name),
             command: choice.command.clone(),
             is_default: true,
         });
@@ -475,7 +476,7 @@ pub fn simulate_paste(prefer_formatted: bool, method: PasteMethod) -> Result<(),
         .spawn(move || {
             let _ = run_simulate_paste(prefer_formatted, method);
         })
-        .map_err(|err| format!("启动模拟粘贴线程失败: {err}"))?;
+        .map_err(|err| t!("platform.paste_thread_failed", err => err).to_string())?;
     Ok(())
 }
 
@@ -503,37 +504,37 @@ fn run_simulate_paste(prefer_formatted: bool, method: PasteMethod) -> Result<(),
     let status = Command::new("xdotool")
         .args(["key", "--clearmodifiers", key])
         .status()
-        .map_err(|err| format!("模拟粘贴失败：未能执行 xdotool: {err}"))?;
+        .map_err(|err| t!("platform.paste_xdotool_failed", err => err).to_string())?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("模拟粘贴失败：xdotool 返回 {status}"))
+        Err(t!("platform.paste_xdotool_error", status => status).to_string())
     }
 }
 
 fn simulate_type_paste() -> Result<(), String> {
     let mut clipboard =
-        arboard::Clipboard::new().map_err(|err| format!("读取剪贴板失败：{err}"))?;
+        arboard::Clipboard::new().map_err(|err| t!("platform.paste_read_clipboard_failed", err => err).to_string())?;
     let text = clipboard
         .get_text()
-        .map_err(|err| format!("读取剪贴板文本失败：{err}"))?;
+        .map_err(|err| t!("platform.paste_read_text_failed", err => err).to_string())?;
     let mut child = Command::new("xdotool")
         .args(["type", "--clearmodifiers", "--file", "-"])
         .stdin(Stdio::piped())
         .spawn()
-        .map_err(|err| format!("模拟输入失败：未能执行 xdotool: {err}"))?;
+        .map_err(|err| t!("platform.paste_type_failed", err => err).to_string())?;
     if let Some(stdin) = child.stdin.as_mut() {
         stdin
             .write_all(text.as_bytes())
-            .map_err(|err| format!("写入 xdotool 输入失败: {err}"))?;
+            .map_err(|err| t!("platform.paste_type_write_failed", err => err).to_string())?;
     }
     let status = child
         .wait()
-        .map_err(|err| format!("等待 xdotool type 失败: {err}"))?;
+        .map_err(|err| t!("platform.paste_type_wait_failed", err => err).to_string())?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("模拟输入失败：xdotool 返回 {status}"))
+        Err(t!("platform.paste_type_error", status => status).to_string())
     }
 }
 
@@ -595,7 +596,7 @@ fn hotkey_loop(
                 }
                 Err(err) => {
                     let _ =
-                        sender.send(ClipboardEvent::Status(format!("更新全局快捷键失败: {err}")));
+                        sender.send(ClipboardEvent::Status(t!("platform.hotkey_global_update_failed", err => err).to_string()));
                     ctx.request_repaint();
                 }
             }
@@ -677,7 +678,7 @@ fn grab_hotkey<C: Connection>(
             )
             .map_err(|err| err.to_string())?
             .check()
-            .map_err(|err| format!("{} 注册失败: {err}", hotkey.label))?;
+            .map_err(|err| t!("platform.hotkey_registered_failed", label => hotkey.label, err => err).to_string())?;
         }
         if let Some(button) = hotkey.button {
             conn.grab_button(
@@ -693,7 +694,7 @@ fn grab_hotkey<C: Connection>(
             )
             .map_err(|err| err.to_string())?
             .check()
-            .map_err(|err| format!("{} 注册失败: {err}", hotkey.label))?;
+            .map_err(|err| t!("platform.hotkey_registered_failed", label => hotkey.label, err => err).to_string())?;
         }
     }
     Ok(())
@@ -772,10 +773,10 @@ fn parse_hotkey<C: Connection>(
             _ => key = Some(part.to_string()),
         }
     }
-    let key = key.ok_or_else(|| format!("快捷键缺少按键: {combo}"))?;
-    let keysym = key_to_keysym(&key).ok_or_else(|| format!("暂不支持的快捷键按键: {key}"))?;
+    let key = key.ok_or_else(|| t!("platform.hotkey_missing_key", combo => combo).to_string())?;
+    let keysym = key_to_keysym(&key).ok_or_else(|| t!("platform.hotkey_unsupported_key", key => key).to_string())?;
     let keycode =
-        keysym_to_keycode(conn, keysym)?.ok_or_else(|| format!("未找到按键 {key} 的 keycode"))?;
+        keysym_to_keycode(conn, keysym)?.ok_or_else(|| t!("platform.hotkey_keycode_not_found", key => key).to_string())?;
     Ok(Some(GrabbedHotkey {
         keycode: Some(keycode),
         button: None,
@@ -839,16 +840,14 @@ fn send_hotkey_action(sender: &Sender<ClipboardEvent>, action: HotkeyAction) {
 
 fn format_hotkey_status(hotkeys: &[GrabbedHotkey]) -> String {
     if hotkeys.is_empty() {
-        "没有可用的全局快捷键".to_string()
+        t!("platform.hotkey_none").to_string()
     } else {
-        format!(
-            "全局快捷键已更新：{}",
-            hotkeys
-                .iter()
-                .map(|key| key.label.as_str())
-                .collect::<Vec<_>>()
-                .join(" / ")
-        )
+        let keys = hotkeys
+            .iter()
+            .map(|key| key.label.as_str())
+            .collect::<Vec<_>>()
+            .join(" / ");
+        t!("platform.hotkey_updated", keys => keys).to_string()
     }
 }
 
@@ -917,7 +916,7 @@ impl ksni::Tray for TiezSlimLinuxTray {
         use ksni::menu::StandardItem;
         vec![
             StandardItem {
-                label: "显示/隐藏".to_string(),
+                label: t!("tray.menu.show_hide").to_string(),
                 activate: Box::new(|tray: &mut Self| {
                     let _ = tray.sender.send(ClipboardEvent::ToggleWindow);
                     tray.ctx.request_repaint();
@@ -926,7 +925,7 @@ impl ksni::Tray for TiezSlimLinuxTray {
             }
             .into(),
             StandardItem {
-                label: "设置".to_string(),
+                label: t!("tray.menu.settings").to_string(),
                 activate: Box::new(|tray: &mut Self| {
                     let _ = tray.sender.send(ClipboardEvent::OpenSettings);
                     tray.ctx.request_repaint();
@@ -936,7 +935,7 @@ impl ksni::Tray for TiezSlimLinuxTray {
             .into(),
             ksni::MenuItem::Separator,
             StandardItem {
-                label: "退出".to_string(),
+                label: t!("tray.menu.quit").to_string(),
                 activate: Box::new(|tray: &mut Self| {
                     let _ = tray.sender.send(ClipboardEvent::Quit);
                     tray.ctx.request_repaint();

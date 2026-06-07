@@ -1,6 +1,7 @@
 use crate::model::{ClipboardEntry, ClipboardKind};
 use crate::platform;
 use arboard::Clipboard;
+use rust_i18n::t;
 use crossbeam_channel::Sender;
 use image::{DynamicImage, ImageBuffer, ImageFormat, Rgba};
 use sha2::{Digest, Sha256};
@@ -32,10 +33,10 @@ pub fn start_watcher(sender: Sender<ClipboardEvent>) {
 }
 
 pub fn set_text(content: &str) -> Result<(), String> {
-    let mut clipboard = Clipboard::new().map_err(|err| format!("初始化剪贴板失败: {err}"))?;
+    let mut clipboard = Clipboard::new().map_err(|err| t!("clipboard.error.init_failed", err = err).to_string())?;
     clipboard
         .set_text(content.to_string())
-        .map_err(|err| format!("写入剪贴板失败: {err}"))
+        .map_err(|err| t!("clipboard.error.write_text_failed", err = err).to_string())
 }
 
 pub fn set_entry(entry: &ClipboardEntry, paste_with_format: bool) -> Result<(), String> {
@@ -186,10 +187,10 @@ fn string_fingerprint(value: &str) -> String {
 }
 
 fn set_html(text: &str, html: &str) -> Result<(), String> {
-    let mut clipboard = Clipboard::new().map_err(|err| format!("初始化剪贴板失败: {err}"))?;
+    let mut clipboard = Clipboard::new().map_err(|err| t!("clipboard.error.init_failed", err = err).to_string())?;
     clipboard
         .set_html(html.to_string(), Some(text.to_string()))
-        .map_err(|err| format!("写入富文本剪贴板失败: {err}"))
+        .map_err(|err| t!("clipboard.error.write_rich_failed", err = err).to_string())
 }
 
 pub fn set_file_list(content: &str) -> Result<(), String> {
@@ -199,16 +200,16 @@ pub fn set_file_list(content: &str) -> Result<(), String> {
         .filter(|path| !path.as_os_str().is_empty())
         .collect::<Vec<_>>();
     if paths.is_empty() {
-        return Err("文件剪贴板内容为空".to_string());
+        return Err(t!("clipboard.error.file_content_empty").to_string());
     }
     #[cfg(target_os = "linux")]
     let _ = set_file_list_with_xclip(&paths);
 
-    let mut clipboard = Clipboard::new().map_err(|err| format!("初始化剪贴板失败: {err}"))?;
+    let mut clipboard = Clipboard::new().map_err(|err| t!("clipboard.error.init_failed", err = err).to_string())?;
     clipboard
         .set()
         .file_list(&paths)
-        .map_err(|err| format!("写入文件剪贴板失败: {err}"))
+        .map_err(|err| t!("clipboard.error.write_file_failed", err = err).to_string())
 }
 
 #[cfg(target_os = "linux")]
@@ -232,24 +233,24 @@ fn set_file_list_with_xclip(paths: &[PathBuf]) -> Result<(), String> {
         ])
         .stdin(Stdio::piped())
         .spawn()
-        .map_err(|err| format!("xclip 不可用: {err}"))?;
+        .map_err(|err| t!("clipboard.error.xclip_unavailable", err = err).to_string())?;
     if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
         stdin
             .write_all(payload.as_bytes())
-            .map_err(|err| format!("写入 xclip 失败: {err}"))?;
+            .map_err(|err| t!("clipboard.error.xclip_write_failed", err = err).to_string())?;
     } else {
-        return Err("打开 xclip stdin 失败".to_string());
+        return Err(t!("clipboard.error.xclip_stdin_failed").to_string());
     }
     std::thread::sleep(Duration::from_millis(40));
     if let Some(status) = child
         .try_wait()
-        .map_err(|err| format!("检查 xclip 状态失败: {err}"))?
+        .map_err(|err| t!("clipboard.error.xclip_status_failed", err = err).to_string())?
     {
         if status.success() {
             return Ok(());
         }
-        return Err(format!("xclip 写入文件剪贴板失败: {status}"));
+        return Err(t!("clipboard.error.xclip_file_failed", status = status).to_string());
     }
     std::thread::spawn(move || {
         let _ = child.wait();
@@ -319,19 +320,19 @@ fn set_image_from_data_url(content: &str) -> Result<(), String> {
         .map(|(_, value)| value)
         .unwrap_or(content);
     let bytes =
-        decode_base64(payload.trim()).map_err(|err| format!("解析图片剪贴板内容失败: {err}"))?;
+        decode_base64(payload.trim()).map_err(|err| t!("clipboard.error.image_parse_failed", err = err).to_string())?;
     let rgba = image::load_from_memory(&bytes)
-        .map_err(|err| format!("读取图片失败: {err}"))?
+        .map_err(|err| t!("clipboard.error.image_read_failed", err = err).to_string())?
         .to_rgba8();
     let (width, height) = rgba.dimensions();
-    let mut clipboard = Clipboard::new().map_err(|err| format!("初始化剪贴板失败: {err}"))?;
+    let mut clipboard = Clipboard::new().map_err(|err| t!("clipboard.error.init_failed", err = err).to_string())?;
     clipboard
         .set_image(arboard::ImageData {
             width: width as usize,
             height: height as usize,
             bytes: Cow::Owned(rgba.into_raw()),
         })
-        .map_err(|err| format!("写入图片剪贴板失败: {err}"))
+        .map_err(|err| t!("clipboard.error.write_image_failed", err = err).to_string())
 }
 
 fn encode_base64(bytes: &[u8]) -> String {
@@ -357,13 +358,13 @@ fn encode_base64(bytes: &[u8]) -> String {
     output
 }
 
-fn decode_base64(value: &str) -> Result<Vec<u8>, &'static str> {
+fn decode_base64(value: &str) -> Result<Vec<u8>, String> {
     let cleaned = value
         .bytes()
         .filter(|byte| !byte.is_ascii_whitespace())
         .collect::<Vec<_>>();
     if cleaned.len() % 4 != 0 {
-        return Err("base64 长度无效");
+        return Err(t!("clipboard.error.base64_length_invalid").to_string());
     }
     let mut out = Vec::with_capacity(cleaned.len() / 4 * 3);
     for chunk in cleaned.chunks(4) {
@@ -390,14 +391,14 @@ fn decode_base64(value: &str) -> Result<Vec<u8>, &'static str> {
     Ok(out)
 }
 
-fn decode_base64_byte(byte: u8) -> Result<u8, &'static str> {
+fn decode_base64_byte(byte: u8) -> Result<u8, String> {
     match byte {
         b'A'..=b'Z' => Ok(byte - b'A'),
         b'a'..=b'z' => Ok(byte - b'a' + 26),
         b'0'..=b'9' => Ok(byte - b'0' + 52),
         b'+' => Ok(62),
         b'/' => Ok(63),
-        _ => Err("base64 字符无效"),
+        _ => Err(t!("clipboard.error.base64_char_invalid").to_string()),
     }
 }
 

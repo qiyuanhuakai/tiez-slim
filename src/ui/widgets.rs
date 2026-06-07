@@ -120,11 +120,12 @@ pub fn macos_range_slider(
 /// - `add_body`: 展开时绘制 body 内容的闭包
 pub fn macos_collapsible_group(
     ui: &mut egui::Ui,
-    title: &str,
+    title: impl AsRef<str>,
     expanded: &mut bool,
     theme: &MacosTokens,
     add_body: impl FnOnce(&mut egui::Ui),
 ) {
+    let title = title.as_ref();
     let available_width = ui.available_width();
 
     egui::Frame::none()
