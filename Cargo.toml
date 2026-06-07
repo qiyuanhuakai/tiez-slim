@@ -7,6 +7,11 @@ edition = "2024"
 default = []
 devtools = ["log-miss-tr"]
 log-miss-tr = ["rust-i18n/log-miss-tr", "dep:log", "dep:env_logger"]
+secure_storage = ["aes-gcm", "keyring"]
+
+[[bin]]
+name = "tiez-cli"
+path = "src/bin/tiez_cli.rs"
 
 [dependencies]
 anyhow = "1.0"
@@ -29,6 +34,11 @@ thiserror = "1.0"
 twemoji-assets = { version = "1.5", default-features = false, features = ["svg"] }
 open = "5"
 rust-i18n = "4"
+globset = "0.4"
+nucleo-matcher = "0.3"
+clap = { version = "4", features = ["derive"] }
+aes-gcm = { version = "0.10", optional = true }
+keyring = { version = "3", optional = true }
 
 log = { version = "0.4", optional = true }
 env_logger = { version = "0.11", optional = true }
