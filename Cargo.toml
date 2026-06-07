@@ -39,6 +39,13 @@ nucleo-matcher = "0.3"
 clap = { version = "4", features = ["derive"] }
 aes-gcm = { version = "0.10", optional = true }
 keyring = { version = "3", optional = true }
+kdeconnect-proto = "=0.2.1"  # locked: 2026-03 ecosystem unstable
+lru = "0.12"
+mdns-sd = "0.11"
+qrcode = "0.14"
+rfd = "0.14"
+uuid = { version = "1", features = ["v4"] }
+ctrlc = "3"
 
 log = { version = "0.4", optional = true }
 env_logger = { version = "0.11", optional = true }
@@ -47,6 +54,8 @@ env_logger = { version = "0.11", optional = true }
 ksni = { version = "0.3", features = ["blocking"] }
 x11-clipboard = "0.9"
 x11rb = "0.13"
+# tokio is Linux-only because it's only used by KDE Connect (T28-T31)
+tokio = { version = "1", features = ["rt-multi-thread", "process", "sync", "macros", "time", "fs"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = ["Win32_Foundation", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }

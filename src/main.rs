@@ -1,28 +1,11 @@
-mod actions;
-mod app;
-mod clipboard;
-mod emoji_data;
-mod encryption;
-mod i18n;
-mod ipc;
-mod model;
-mod platform;
-mod search;
-mod snippets;
-mod sound;
-mod storage;
-mod storage_io;
-mod sync;
-mod ui;
-
 rust_i18n::i18n!("locales", fallback = "en-US");
 
 use anyhow::Context;
 use app::ClipboardApp;
-use rust_i18n::t;
 use std::path::PathBuf;
 use std::sync::Arc;
 use storage::Storage;
+use tiez_slim_linux::*;
 
 const APP_DISPLAY_NAME: &str = "tiez-slim";
 const APP_ID: &str = "tiez-slim-linux";
@@ -37,10 +20,11 @@ fn main() -> anyhow::Result<()> {
 
     let dev_mode = dev_mode_enabled();
     let minimized = minimized_start_enabled();
-    let storage = Storage::open(resolve_db_path()).context(t!("error.open_db_failed"))?;
+    let storage =
+        Storage::open(resolve_db_path()).context(rust_i18n::t!("error.open_db_failed"))?;
     storage
         .cleanup_expired()
-        .context(t!("error.cleanup_failed"))?;
+        .context(rust_i18n::t!("error.cleanup_failed"))?;
 
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(APP_DISPLAY_NAME)
