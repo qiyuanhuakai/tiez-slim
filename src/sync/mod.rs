@@ -49,6 +49,7 @@ enum SyncCmd {
     Disable,
     Pair(String),
     Unpair(String),
+    SendClipboard(String),
 }
 
 // ── Sync events (runtime → UI) ────────────────────────────────────────
@@ -99,10 +100,9 @@ pub struct SyncManager {
     device_id: String,
     state: SyncState,
     discovered_devices: Vec<DiscoveredDevice>,
-    /// Sender for commands to the background runtime.
     cmd_tx: Option<crossbeam_channel::Sender<SyncCmd>>,
-    /// Receiver for events from the background runtime.
     event_rx: Option<crossbeam_channel::Receiver<SyncEvent>>,
+    echo_guard: SyncEchoGuard,
 }
 
 #[cfg(feature = "kde_connect")]
@@ -116,6 +116,7 @@ impl SyncManager {
             discovered_devices: Vec::new(),
             cmd_tx: None,
             event_rx: None,
+            echo_guard: SyncEchoGuard::new(),
         }
     }
 
@@ -230,14 +231,36 @@ impl SyncManager {
                 SyncEvent::PairFailed { id: _, reason } => {
                     self.state = SyncState::Error(reason);
                 }
-                SyncEvent::ClipboardReceived { content: _ } => {
-                    // Handled by ClipboardPlugin (T30)
-                }
+                SyncEvent::ClipboardReceived { content: _ } => {}
                 SyncEvent::Error(msg) => {
                     self.state = SyncState::Error(msg);
                 }
             }
         }
+    }
+
+    pub fn echo_guard(&self) -> &SyncEchoGuard {
+        &self.echo_guard
+    }
+
+    pub fn send_clipboard(&self, content: &str) {
+        if self.echo_guard.should_suppress(content) {
+            return;
+        }
+        if let Some(tx) = &self.cmd_tx {
+            let _ = tx.send(SyncCmd::SendClipboard(content.to_string()));
+        }
+    }
+
+    pub fn take_clipboard_received(&mut self) -> Option<String> {
+        let rx = self.event_rx.as_ref()?;
+        let mut last = None;
+        while let Ok(event) = rx.try_recv() {
+            if let SyncEvent::ClipboardReceived { content } = event {
+                last = Some(content);
+            }
+        }
+        last
     }
 }
 
@@ -301,7 +324,7 @@ impl Pairing {
     }
 }
 
-// ── ClipboardPlugin (skeleton for T30) ───────────────────────────────
+// ── ClipboardPlugin (bidirectional sync with echo suppression) ────────
 
 #[cfg(feature = "kde_connect")]
 pub struct ClipboardPlugin {
@@ -318,6 +341,128 @@ impl ClipboardPlugin {
 
     pub fn device_id(&self) -> &str {
         &self.device_id
+    }
+}
+
+/// Prevents feedback loop: suppresses local clipboard re-capture after a remote write.
+#[cfg(feature = "kde_connect")]
+#[derive(Clone)]
+pub(crate) struct SyncEchoGuard {
+    inner: Arc<std::sync::Mutex<(String, Option<std::time::Instant>)>>,
+}
+
+#[cfg(feature = "kde_connect")]
+const SYNC_ECHO_WINDOW: std::time::Duration = std::time::Duration::from_millis(800);
+
+#[cfg(feature = "kde_connect")]
+impl SyncEchoGuard {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new(std::sync::Mutex::new((String::new(), None))),
+        }
+    }
+
+    pub fn mark_remote_write(&self, content: &str) {
+        let hash = content_hash(content);
+        let mut state = self.inner.lock().expect("sync echo guard poisoned");
+        *state = (hash, Some(std::time::Instant::now()));
+    }
+
+    pub fn should_suppress(&self, content: &str) -> bool {
+        let hash = content_hash(content);
+        let state = self.inner.lock().expect("sync echo guard poisoned");
+        state.0 == hash
+            && state
+                .1
+                .is_some_and(|at| at.elapsed() < SYNC_ECHO_WINDOW)
+    }
+}
+
+#[cfg(feature = "kde_connect")]
+fn content_hash(content: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+#[cfg(feature = "kde_connect")]
+pub(crate) struct TiezClipboardPlugin {
+    echo_guard: SyncEchoGuard,
+    event_tx: crossbeam_channel::Sender<SyncEvent>,
+}
+
+#[cfg(feature = "kde_connect")]
+impl TiezClipboardPlugin {
+    pub fn new(event_tx: crossbeam_channel::Sender<SyncEvent>) -> Self {
+        Self {
+            echo_guard: SyncEchoGuard::new(),
+            event_tx,
+        }
+    }
+
+    pub fn echo_guard(&self) -> &SyncEchoGuard {
+        &self.echo_guard
+    }
+}
+
+#[cfg(feature = "kde_connect")]
+#[kdeconnect_proto::async_trait]
+impl kdeconnect_proto::plugin::Plugin for TiezClipboardPlugin {
+    fn supported_incoming_packets(&self) -> Vec<kdeconnect_proto::packet::NetworkPacketType> {
+        use kdeconnect_proto::packet::NetworkPacketType;
+        vec![NetworkPacketType::Clipboard, NetworkPacketType::ClipboardConnect]
+    }
+
+    fn supported_outgoing_packets(&self) -> Vec<kdeconnect_proto::packet::NetworkPacketType> {
+        use kdeconnect_proto::packet::NetworkPacketType;
+        vec![NetworkPacketType::Clipboard]
+    }
+
+    async fn on_packet_received(
+        &self,
+        packet: &kdeconnect_proto::packet::NetworkPacket,
+        _link: &kdeconnect_proto::device::Link,
+    ) -> kdeconnect_proto::error::Result<()> {
+        use kdeconnect_proto::packet::NetworkPacketBody;
+
+        match &packet.body {
+            NetworkPacketBody::Clipboard(clip) => {
+                if clip.content.is_empty() {
+                    return Ok(());
+                }
+                if self.echo_guard.should_suppress(&clip.content) {
+                    return Ok(());
+                }
+
+                self.echo_guard.mark_remote_write(&clip.content);
+                let _ = self.event_tx.send(SyncEvent::ClipboardReceived {
+                    content: clip.content.clone(),
+                });
+            }
+            NetworkPacketBody::ClipboardConnect(clip) => {
+                if clip.content.is_empty() {
+                    return Ok(());
+                }
+                if self.echo_guard.should_suppress(&clip.content) {
+                    return Ok(());
+                }
+
+                self.echo_guard.mark_remote_write(&clip.content);
+                let _ = self.event_tx.send(SyncEvent::ClipboardReceived {
+                    content: clip.content.clone(),
+                });
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    async fn on_start(
+        &self,
+        _link: &kdeconnect_proto::device::Link,
+    ) -> kdeconnect_proto::error::Result<()> {
+        Ok(())
     }
 }
 
@@ -564,6 +709,23 @@ fn sync_runtime(
                         Some(SyncCmd::Unpair(peer_id)) => {
                             device.unpair_with(&peer_id).await;
                         }
+                        Some(SyncCmd::SendClipboard(content)) => {
+                            use kdeconnect_proto::packet::{
+                                NetworkPacket, NetworkPacketBody,
+                                clipboard::ClipboardPacket,
+                            };
+                            let packet = NetworkPacket::new(NetworkPacketBody::Clipboard(
+                                ClipboardPacket { content },
+                            ));
+                            let links = device.links().lock().await;
+                            for (_id, link) in links.iter() {
+                                if link.pair_state
+                                    == kdeconnect_proto::device::PairState::Paired
+                                {
+                                    link.send(packet.clone()).await;
+                                }
+                            }
+                        }
                         None => break,
                     }
                 }
@@ -748,5 +910,58 @@ mod tests {
         assert_eq!(dev2.id, "abc");
         assert_eq!(dev2.name, "Phone");
         assert!(!dev2.paired);
+    }
+
+    #[test]
+    #[cfg(feature = "kde_connect")]
+    fn test_echo_guard_suppresses_matching_content() {
+        let guard = SyncEchoGuard::new();
+        assert!(!guard.should_suppress("hello"));
+
+        guard.mark_remote_write("hello");
+        assert!(guard.should_suppress("hello"));
+        assert!(!guard.should_suppress("world"));
+    }
+
+    #[test]
+    #[cfg(feature = "kde_connect")]
+    fn test_echo_guard_different_content_not_suppressed() {
+        let guard = SyncEchoGuard::new();
+        guard.mark_remote_write("aaa");
+        assert!(!guard.should_suppress("bbb"));
+    }
+
+    #[test]
+    #[cfg(feature = "kde_connect")]
+    fn test_content_hash_deterministic() {
+        let h1 = content_hash("test content");
+        let h2 = content_hash("test content");
+        assert_eq!(h1, h2);
+
+        let h3 = content_hash("different");
+        assert_ne!(h1, h3);
+    }
+
+    #[test]
+    #[cfg(feature = "kde_connect")]
+    fn test_sync_echo_guard_clone() {
+        let guard1 = SyncEchoGuard::new();
+        let guard2 = guard1.clone();
+
+        guard1.mark_remote_write("shared");
+        assert!(guard2.should_suppress("shared"));
+    }
+
+    #[test]
+    #[cfg(feature = "kde_connect")]
+    fn test_clipboard_plugin_echo_guard_access() {
+        let (tx, _rx) = crossbeam_channel::unbounded();
+        let plugin = TiezClipboardPlugin::new(tx);
+
+        let guard = plugin.echo_guard();
+        assert!(!guard.should_suppress("anything"));
+
+        guard.mark_remote_write("anything");
+        assert!(guard.should_suppress("anything"));
     }
 }
