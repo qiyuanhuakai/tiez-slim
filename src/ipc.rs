@@ -498,7 +498,9 @@ impl IpcServer {
             .get("var")
             .and_then(|v| serde_json::from_value(v.clone()).ok())
             .unwrap_or_default();
-        match crate::snippets::interpolate::interpolate(&snippet.template, &vars) {
+        let mut all_vars = crate::snippets::interpolate::resolve_builtins(None);
+        all_vars.extend(vars);
+        match crate::snippets::interpolate::interpolate(&snippet.template, &all_vars) {
             Ok(text) => {
                 let _ = storage.increment_snippet_use_count(id);
                 IpcResponse::ok(serde_json::json!({"text": text}))

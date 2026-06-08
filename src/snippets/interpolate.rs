@@ -4,6 +4,11 @@
 
 use std::collections::HashMap;
 
+use chrono::Local;
+use uuid::Uuid;
+
+const MAX_CLIPBOARD_LEN: usize = 200;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum InterpError {
     MissingVariable(String),
@@ -132,6 +137,20 @@ pub enum Token {
     Variable(InterpSegment),
 }
 
+pub fn resolve_builtins(clipboard_content: Option<&str>) -> HashMap<String, String> {
+    let now = Local::now();
+    let mut map = HashMap::new();
+    map.insert("date".into(), now.format("%Y-%m-%d").to_string());
+    map.insert("time".into(), now.format("%H:%M:%S").to_string());
+    map.insert("datetime".into(), now.format("%Y-%m-%d %H:%M:%S").to_string());
+    map.insert("uuid".into(), Uuid::new_v4().to_string());
+    if let Some(clip) = clipboard_content {
+        let truncated: String = clip.chars().take(MAX_CLIPBOARD_LEN).collect();
+        map.insert("clipboard".into(), truncated);
+    }
+    map
+}
+
 pub fn interpolate(
     template: &str,
     values: &HashMap<String, String>,
@@ -254,5 +273,68 @@ mod tests {
         assert_eq!(vars[1].default.as_deref(), Some("default"));
         assert_eq!(vars[2].name, "c");
         assert_eq!(vars[2].options.as_ref().unwrap(), &vec!["X", "Y", "Z"]);
+    }
+
+    #[test]
+    fn builtin_date_is_yyyy_mm_dd() {
+        let builtins = resolve_builtins(None);
+        let date = builtins.get("date").expect("date builtin missing");
+        assert_eq!(date.len(), 10);
+        assert_eq!(&date[4..5], "-");
+        assert_eq!(&date[7..8], "-");
+    }
+
+    #[test]
+    fn builtin_time_is_hh_mm_ss() {
+        let builtins = resolve_builtins(None);
+        let time = builtins.get("time").expect("time builtin missing");
+        assert_eq!(time.len(), 8);
+        assert_eq!(&time[2..3], ":");
+        assert_eq!(&time[5..6], ":");
+    }
+
+    #[test]
+    fn builtin_datetime_format() {
+        let builtins = resolve_builtins(None);
+        let dt = builtins.get("datetime").expect("datetime builtin missing");
+        assert_eq!(dt.len(), 19);
+        assert_eq!(&dt[10..11], " ");
+    }
+
+    #[test]
+    fn builtin_uuid_format() {
+        let builtins = resolve_builtins(None);
+        let uuid = builtins.get("uuid").expect("uuid builtin missing");
+        assert_eq!(uuid.len(), 36);
+        assert_eq!(uuid.chars().filter(|c| *c == '-').count(), 4);
+    }
+
+    #[test]
+    fn builtin_clipboard_truncated() {
+        let long_text = "a".repeat(500);
+        let builtins = resolve_builtins(Some(&long_text));
+        let clip = builtins.get("clipboard").expect("clipboard builtin missing");
+        assert_eq!(clip.len(), 200);
+    }
+
+    #[test]
+    fn builtin_clipboard_short_not_truncated() {
+        let builtins = resolve_builtins(Some("hello"));
+        let clip = builtins.get("clipboard").expect("clipboard builtin missing");
+        assert_eq!(clip, "hello");
+    }
+
+    #[test]
+    fn builtin_clipboard_none_not_present() {
+        let builtins = resolve_builtins(None);
+        assert!(!builtins.contains_key("clipboard"));
+    }
+
+    #[test]
+    fn interpolate_with_builtins() {
+        let builtins = resolve_builtins(None);
+        let result = interpolate("Today is {{date}}", &builtins).unwrap();
+        assert!(result.starts_with("Today is "));
+        assert_eq!(result.len(), "Today is ".len() + 10);
     }
 }

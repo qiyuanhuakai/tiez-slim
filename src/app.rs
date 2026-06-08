@@ -4283,9 +4283,10 @@ impl ClipboardApp {
         let segments = crate::snippets::interpolate::extract_variables(&template);
 
         if segments.is_empty() {
+            let builtins = crate::snippets::interpolate::resolve_builtins(None);
             let result = crate::snippets::interpolate::interpolate(
                 &template,
-                &std::collections::HashMap::new(),
+                &builtins,
             );
             match result {
                 Ok(text) => {
@@ -4426,7 +4427,9 @@ impl ClipboardApp {
             if d.current_index + 1 < d.segments.len() {
                 d.current_index += 1;
             } else {
-                let result = crate::snippets::interpolate::interpolate(&d.template, &d.values);
+                let mut all_vars = crate::snippets::interpolate::resolve_builtins(None);
+                all_vars.extend(d.values.clone());
+                let result = crate::snippets::interpolate::interpolate(&d.template, &all_vars);
                 let snippet_id = d.snippet_id;
                 let snippet_name = d.snippet_name.clone();
                 self.snippet_variable_dialog = None;
