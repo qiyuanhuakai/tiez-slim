@@ -130,6 +130,7 @@ mod tests {
             use_count: 0,
             is_external: false,
             pinned_order: 0,
+            source: crate::model::SelectionSource::Clipboard,
         }
     }
 

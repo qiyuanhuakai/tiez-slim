@@ -17,7 +17,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 use x11rb::connection::Connection;
 use x11rb::protocol::xfixes::SelectionEventMask;
-use x11rb::rust_connection::RustConnection;
 
 const DEBOUNCE_WINDOW: Duration = Duration::from_millis(200);
 const POLL_INTERVAL: Duration = Duration::from_millis(700);
@@ -36,10 +35,7 @@ impl XFixesProbe {
     }
 }
 
-pub fn start_primary_watcher(
-    sender: Sender<ClipboardEvent>,
-    primary_enabled: Arc<AtomicBool>,
-) {
+pub fn start_primary_watcher(sender: Sender<ClipboardEvent>, primary_enabled: Arc<AtomicBool>) {
     thread::Builder::new()
         .name("primary-watcher".to_string())
         .spawn(move || {
@@ -113,16 +109,16 @@ fn try_xfixes_session(
                 }
                 last_event_time = now;
 
-                if let Some(text) = read_primary_text() {
-                    if text != last_text {
-                        last_text = text.clone();
-                        if let Some(entry) = ClipboardEntry::captured_text_with_source(
-                            text,
-                            platform::active_app_name(),
-                            Some(SelectionSource::Primary),
-                        ) {
-                            let _ = sender.try_send(ClipboardEvent::Captured(entry));
-                        }
+                if let Some(text) = read_primary_text()
+                    && text != last_text
+                {
+                    last_text = text.clone();
+                    if let Some(entry) = ClipboardEntry::captured_text_with_source(
+                        text,
+                        platform::active_app_name(),
+                        Some(SelectionSource::Primary),
+                    ) {
+                        let _ = sender.try_send(ClipboardEvent::Captured(entry));
                     }
                 }
             }
@@ -140,16 +136,16 @@ fn run_polling_loop(sender: &Sender<ClipboardEvent>, primary_enabled: &Arc<Atomi
             thread::sleep(POLL_INTERVAL);
             continue;
         }
-        if let Some(text) = read_primary_text() {
-            if text != last_text {
-                last_text = text.clone();
-                if let Some(entry) = ClipboardEntry::captured_text_with_source(
-                    text,
-                    platform::active_app_name(),
-                    Some(SelectionSource::Primary),
-                ) {
-                    let _ = sender.try_send(ClipboardEvent::Captured(entry));
-                }
+        if let Some(text) = read_primary_text()
+            && text != last_text
+        {
+            last_text = text.clone();
+            if let Some(entry) = ClipboardEntry::captured_text_with_source(
+                text,
+                platform::active_app_name(),
+                Some(SelectionSource::Primary),
+            ) {
+                let _ = sender.try_send(ClipboardEvent::Captured(entry));
             }
         }
         thread::sleep(POLL_INTERVAL);

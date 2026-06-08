@@ -1,7 +1,7 @@
 use crate::actions::{Action, ActionKind};
 use crate::model::{
-    ClipboardEntry, ClipboardEntrySummary, ClipboardKind, SelectionSource, MAX_ENTRIES,
-    RETENTION_DAYS,
+    ClipboardEntry, ClipboardEntrySummary, ClipboardKind, MAX_ENTRIES, RETENTION_DAYS,
+    SelectionSource,
 };
 use anyhow::{Context, Result};
 use chrono::{Duration, Local};
@@ -380,7 +380,7 @@ impl Storage {
         let conn = self.conn.lock().expect("storage mutex poisoned");
         let sql = "SELECT h.id, h.content_type, h.source_app, h.source_app_path, h.timestamp,
                 h.preview, h.is_pinned, h.use_count, h.is_external, h.pinned_order,
-                h.sensitive
+                h.sensitive, h.source
              FROM clipboard_history h
              ORDER BY h.is_pinned DESC, h.pinned_order ASC, h.timestamp DESC LIMIT 300";
         let mut stmt = conn.prepare(sql)?;
@@ -1363,20 +1363,21 @@ mod tests {
 
         let storage = Storage::open(path).expect("open migrates old schema");
 
-        let conn = storage.conn.lock().expect("poisoned");
-        let mut stmt = conn
-            .prepare("PRAGMA table_info(clipboard_history)")
-            .expect("prepare");
-        let columns: Vec<String> = stmt
-            .query_map([], |row| row.get::<_, String>(1))
-            .expect("query")
-            .filter_map(|r| r.ok())
-            .collect();
-        assert!(
-            columns.contains(&"source".to_string()),
-            "source column should exist after migration"
-        );
-        drop(conn);
+        {
+            let conn = storage.conn.lock().expect("poisoned");
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(clipboard_history)")
+                .expect("prepare");
+            let columns: Vec<String> = stmt
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("query")
+                .filter_map(|r| r.ok())
+                .collect();
+            assert!(
+                columns.contains(&"source".to_string()),
+                "source column should exist after migration"
+            );
+        }
 
         let entry_clip =
             ClipboardEntry::captured_text("clipboard text".to_string(), "test".to_string())

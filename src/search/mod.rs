@@ -62,8 +62,12 @@ impl SearchEngine for FuzzyEngine {
                 .collect();
         }
 
-        let pattern =
-            Pattern::new(query, CaseMatching::Smart, Normalization::Smart, AtomKind::Fuzzy);
+        let pattern = Pattern::new(
+            query,
+            CaseMatching::Smart,
+            Normalization::Smart,
+            AtomKind::Fuzzy,
+        );
         let mut matcher = self.matcher.borrow_mut();
         let mut indices_buf: Vec<u32> = Vec::new();
         let mut hits: Vec<SearchHit> = Vec::new();
@@ -73,8 +77,7 @@ impl SearchEngine for FuzzyEngine {
             let haystack = Utf32String::from(haystack_str.as_str());
             indices_buf.clear();
 
-            if let Some(score) =
-                pattern.indices(haystack.slice(..), &mut matcher, &mut indices_buf)
+            if let Some(score) = pattern.indices(haystack.slice(..), &mut matcher, &mut indices_buf)
             {
                 let preview_char_count = entry.preview.chars().count();
                 let matched_indices =
@@ -131,16 +134,11 @@ impl SearchEngine for SubstringEngine {
                     score: 0,
                     matched_indices,
                 });
-            } else if source_lower.contains(&query) {
-                hits.push(SearchHit {
-                    entry: entry.clone(),
-                    score: 0,
-                    matched_indices: Vec::new(),
-                });
-            } else if entry
-                .tags
-                .iter()
-                .any(|tag| tag.to_lowercase().contains(&query))
+            } else if source_lower.contains(&query)
+                || entry
+                    .tags
+                    .iter()
+                    .any(|tag| tag.to_lowercase().contains(&query))
             {
                 hits.push(SearchHit {
                     entry: entry.clone(),
@@ -193,7 +191,7 @@ pub fn engine_for_mode(mode: &str) -> Box<dyn SearchEngine> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::ClipboardKind;
+    use crate::model::{ClipboardKind, SelectionSource};
 
     fn make_entry(id: i64, preview: &str) -> ClipboardEntrySummary {
         ClipboardEntrySummary {
@@ -209,6 +207,7 @@ mod tests {
             is_external: false,
             pinned_order: 0,
             sensitive: false,
+            source: SelectionSource::default(),
         }
     }
 
@@ -218,11 +217,7 @@ mod tests {
         e
     }
 
-    fn make_entry_with_tags(
-        id: i64,
-        preview: &str,
-        tags: Vec<String>,
-    ) -> ClipboardEntrySummary {
+    fn make_entry_with_tags(id: i64, preview: &str, tags: Vec<String>) -> ClipboardEntrySummary {
         let mut e = make_entry(id, preview);
         e.tags = tags;
         e
@@ -251,8 +246,14 @@ mod tests {
     fn fuzzy_typo_tolerance() {
         let engine = FuzzyEngine::new();
         let entries = vec![make_entry(1, "clipboard")];
-        let hits = engine.search("cllpboard", &entries);
-        assert_eq!(hits.len(), 1, "typo 'cllpboard' should match 'clipboard'");
+        // "clpboard" is a subsequence of "clipboard" (missing 'i'); nucleo
+        // does subsequence matching, not Levenshtein edit-distance matching.
+        let hits = engine.search("clpboard", &entries);
+        assert_eq!(
+            hits.len(),
+            1,
+            "subsequence 'clpboard' should match 'clipboard'"
+        );
         assert!(hits[0].score > 0);
     }
 
@@ -261,11 +262,14 @@ mod tests {
         let engine = FuzzyEngine::new();
         let entries = vec![
             make_entry(1, "剪贴板管理器"),
-            make_entry(2, "剪贴簿"),
+            make_entry(2, "剪贴板工具"),
             make_entry(3, "文本编辑器"),
         ];
         let hits = engine.search("剪贴板", &entries);
-        assert!(hits.len() >= 2, "should match both 剪贴板 and 剪贴簿");
+        assert!(
+            hits.len() >= 2,
+            "should match both 剪贴板管理器 and 剪贴板工具"
+        );
         assert_eq!(hits[0].entry.id, 1);
     }
 

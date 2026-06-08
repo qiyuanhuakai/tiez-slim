@@ -1057,9 +1057,8 @@ impl ClipboardApp {
                     let filtered: Vec<_> = all_entries
                         .into_iter()
                         .filter(|e| {
-                            self.kind_filter.as_ref().map_or(true, |k| &e.kind == k)
-                                && active_tag_filter
-                                    .map_or(true, |t| e.tags.iter().any(|et| et == t))
+                            self.kind_filter.as_ref().is_none_or(|k| &e.kind == k)
+                                && active_tag_filter.is_none_or(|t| e.tags.iter().any(|et| et == t))
                         })
                         .collect();
                     let engine = crate::search::engine_for_mode(&self.search_mode);
@@ -1105,8 +1104,7 @@ impl ClipboardApp {
         self.rebuild_entry_matching_actions();
     }
 
-
-        fn rebuild_entry_matching_actions(&mut self) {
+    fn rebuild_entry_matching_actions(&mut self) {
         self.action_matcher = crate::actions::matcher::ActionMatcher::new(self.actions.clone());
         self.entry_matching_actions.clear();
         for entry in &self.entries {
@@ -3043,12 +3041,35 @@ impl ClipboardApp {
                                 let match_indices = self.search_hits.get(&entry.id);
                                 if let Some(indices) = match_indices {
                                     if !indices.is_empty() && !sensitive {
-                                        render_highlighted_text(ui, &text, indices, 12.5, text_color, &self.theme);
+                                        render_highlighted_text(
+                                            ui,
+                                            &text,
+                                            indices,
+                                            12.5,
+                                            text_color,
+                                            &self.theme,
+                                        );
                                     } else {
-                                        ui.add(egui::Label::new(egui::RichText::new(text).size(12.5).monospace().color(text_color)).truncate());
+                                        ui.add(
+                                            egui::Label::new(
+                                                egui::RichText::new(text)
+                                                    .size(12.5)
+                                                    .monospace()
+                                                    .color(text_color),
+                                            )
+                                            .truncate(),
+                                        );
                                     }
                                 } else {
-                                    ui.add(egui::Label::new(egui::RichText::new(text).size(12.5).monospace().color(text_color)).truncate());
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(text)
+                                                .size(12.5)
+                                                .monospace()
+                                                .color(text_color),
+                                        )
+                                        .truncate(),
+                                    );
                                 }
 
                                 if self.tag_manager_enabled {
@@ -3098,12 +3119,35 @@ impl ClipboardApp {
                             let match_indices = self.search_hits.get(&entry.id);
                             if let Some(indices) = match_indices {
                                 if !indices.is_empty() && !sensitive {
-                                    render_highlighted_text(ui, &text, indices, 13.5, text_color, &self.theme);
+                                    render_highlighted_text(
+                                        ui,
+                                        &text,
+                                        indices,
+                                        13.5,
+                                        text_color,
+                                        &self.theme,
+                                    );
                                 } else {
-                                    ui.add(egui::Label::new(egui::RichText::new(text).size(13.5).monospace().color(text_color)).truncate());
+                                    ui.add(
+                                        egui::Label::new(
+                                            egui::RichText::new(text)
+                                                .size(13.5)
+                                                .monospace()
+                                                .color(text_color),
+                                        )
+                                        .truncate(),
+                                    );
                                 }
                             } else {
-                                ui.add(egui::Label::new(egui::RichText::new(text).size(13.5).monospace().color(text_color)).truncate());
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(text)
+                                            .size(13.5)
+                                            .monospace()
+                                            .color(text_color),
+                                    )
+                                    .truncate(),
+                                );
                             }
 
                             if self.tag_manager_enabled && !entry.tags.is_empty() {
@@ -4929,7 +4973,10 @@ fn render_highlighted_text(
     theme: &MacosTokens,
 ) {
     let highlight_bg = egui::Color32::from_rgba_unmultiplied(
-        theme.accent.r(), theme.accent.g(), theme.accent.b(), 50,
+        theme.accent.r(),
+        theme.accent.g(),
+        theme.accent.b(),
+        50,
     );
     let highlight_fg = theme.accent;
     let highlight_set: std::collections::HashSet<usize> = match_indices.iter().copied().collect();
@@ -4946,7 +4993,16 @@ fn render_highlighted_text(
                 } else {
                     (base_color, egui::Color32::TRANSPARENT)
                 };
-                ui.add(egui::Label::new(egui::RichText::new(segment).size(font_size).monospace().color(fg).background_color(bg)).truncate());
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(segment)
+                            .size(font_size)
+                            .monospace()
+                            .color(fg)
+                            .background_color(bg),
+                    )
+                    .truncate(),
+                );
                 segment_start = byte_idx;
             }
             in_highlight = is_match;
@@ -4958,7 +5014,16 @@ fn render_highlighted_text(
             } else {
                 (base_color, egui::Color32::TRANSPARENT)
             };
-            ui.add(egui::Label::new(egui::RichText::new(segment).size(font_size).monospace().color(fg).background_color(bg)).truncate());
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(segment)
+                        .size(font_size)
+                        .monospace()
+                        .color(fg)
+                        .background_color(bg),
+                )
+                .truncate(),
+            );
         }
     });
 }

@@ -40,7 +40,15 @@ impl PrimaryEchoGuard {
             inner: Arc::new(Mutex::new((String::new(), None))),
         }
     }
+}
 
+impl Default for PrimaryEchoGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl PrimaryEchoGuard {
     /// Record a write we just performed.
     pub fn mark_write(&self, content_hash: String) {
         let mut state = self.inner.lock().expect("echo guard poisoned");
@@ -51,8 +59,7 @@ impl PrimaryEchoGuard {
     /// echo window.
     pub fn should_suppress(&self, content_hash: &str) -> bool {
         let state = self.inner.lock().expect("echo guard poisoned");
-        state.0 == content_hash
-            && state.1.is_some_and(|at| at.elapsed() < PRIMARY_ECHO_WINDOW)
+        state.0 == content_hash && state.1.is_some_and(|at| at.elapsed() < PRIMARY_ECHO_WINDOW)
     }
 }
 
@@ -329,9 +336,7 @@ fn watch_loop(
 
             if let Some(primary_text) = read_primary_text() {
                 let primary_hash = string_fingerprint(&primary_text);
-                if primary_text != last_primary_text
-                    && !echo_guard.should_suppress(&primary_hash)
-                {
+                if primary_text != last_primary_text && !echo_guard.should_suppress(&primary_hash) {
                     let entry = ClipboardEntry::captured_text_with_source(
                         primary_text.clone(),
                         platform::active_app_name(),

@@ -119,8 +119,9 @@ pub fn compile_custom_rules(raw: &str) -> Result<Vec<Regex>, Vec<(usize, regex::
 
 /// Origin of a clipboard capture: normal CLIPBOARD selection (Ctrl+C) or
 /// PRIMARY selection (mouse highlight).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum SelectionSource {
+    #[default]
     #[serde(rename = "clipboard")]
     Clipboard,
     #[serde(rename = "primary")]
@@ -133,12 +134,6 @@ impl SelectionSource {
             Self::Clipboard => "clipboard",
             Self::Primary => "primary",
         }
-    }
-}
-
-impl Default for SelectionSource {
-    fn default() -> Self {
-        Self::Clipboard
     }
 }
 
@@ -928,7 +923,10 @@ mod tests {
         assert_eq!(SelectionSource::Primary.as_str(), "primary");
         assert_eq!(SelectionSource::default(), SelectionSource::Clipboard);
         assert_eq!(SelectionSource::from("primary"), SelectionSource::Primary);
-        assert_eq!(SelectionSource::from("clipboard"), SelectionSource::Clipboard);
+        assert_eq!(
+            SelectionSource::from("clipboard"),
+            SelectionSource::Clipboard
+        );
         assert_eq!(SelectionSource::from("unknown"), SelectionSource::Clipboard);
 
         let json = serde_json::to_string(&SelectionSource::Primary).unwrap();
