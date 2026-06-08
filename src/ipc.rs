@@ -460,7 +460,7 @@ mod tests {
         assert_eq!(IpcError::IpcDisabled.exit_code(), 6);
         assert_eq!(IpcError::Timeout.exit_code(), 1);
         // Io maps to 1
-        let io_err = IpcError::Io(std::io::Error::new(std::io::ErrorKind::Other, "test"));
+        let io_err = IpcError::Io(std::io::Error::other("test"));
         assert_eq!(io_err.exit_code(), 1);
         assert_eq!(IpcError::Storage("x".into()).exit_code(), 1);
     }
