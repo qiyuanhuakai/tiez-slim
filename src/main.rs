@@ -21,6 +21,7 @@ fn main() -> anyhow::Result<()> {
 
     let dev_mode = dev_mode_enabled();
     let minimized = minimized_start_enabled();
+    #[allow(unused_mut)]
     let mut storage =
         Storage::open(resolve_db_path()).context(rust_i18n::t!("error.open_db_failed"))?;
     storage

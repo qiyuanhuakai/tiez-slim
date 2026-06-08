@@ -8,6 +8,7 @@ default = []
 devtools = ["log-miss-tr"]
 log-miss-tr = ["rust-i18n/log-miss-tr", "dep:log", "dep:env_logger"]
 secure_storage = ["aes-gcm", "keyring", "base64", "getrandom"]
+kde_connect = ["dep:kdeconnect-proto", "dep:mdns-sd", "dep:qrcode"]
 
 [[bin]]
 name = "tiez-cli"
@@ -41,10 +42,10 @@ aes-gcm = { version = "0.10", optional = true, features = ["getrandom"] }
 keyring = { version = "3", optional = true }
 base64 = { version = "0.22", optional = true }
 getrandom = { version = "0.2", optional = true }
-kdeconnect-proto = "=0.2.1"  # locked: 2026-03 ecosystem unstable
+kdeconnect-proto = { version = "=0.2.1", optional = true }
 lru = "0.12"
-mdns-sd = "0.11"
-qrcode = "0.14"
+mdns-sd = { version = "0.11", optional = true }
+qrcode = { version = "0.14", optional = true }
 rfd = "0.14"
 uuid = { version = "1", features = ["v4"] }
 ctrlc = "3"
