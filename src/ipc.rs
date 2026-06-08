@@ -364,13 +364,23 @@ impl IpcServer {
     /// `status` — return basic server status.
     fn cmd_status(storage: &Storage) -> IpcResponse {
         let entry_count = storage.list_all_summaries().map(|v| v.len()).unwrap_or(0);
-
         let tags = storage.saved_tags().unwrap_or_default();
+
+        let sync_device_id = storage
+            .get_setting("sync.device_id")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
 
         IpcResponse::ok(serde_json::json!({
             "version": env!("CARGO_PKG_VERSION"),
             "entry_count": entry_count,
             "saved_tags": tags,
+            "sync": {
+                "enabled": !sync_device_id.is_empty(),
+                "device_id": sync_device_id,
+                "state": "idle",
+            },
         }))
     }
 

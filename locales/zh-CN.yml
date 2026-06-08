@@ -799,3 +799,21 @@ cli:
     error_not_found: "未找到 ID 为 %{id} 的记录"
     error_io: "IO 错误: %{err}"
     error_parse: "解析失败: %{err}"
+
+settings:
+  sync:
+    title: "同步 (KDE Connect)"
+    feature_disabled: "KDE Connect 功能未启用"
+    enable_hint: "编译时启用 kde_connect feature 以使用同步功能"
+    enable: "启用同步"
+    status: "状态："
+    device_id: "设备 ID："
+    state_disabled: "已禁用"
+    state_discovering: "正在发现设备..."
+    state_pairing: "正在配对 %{name}..."
+    state_connected: "已连接 %{name}"
+    state_error: "错误：%{err}"
+    show_qr: "显示二维码"
+    paired_devices: "已配对设备"
+    no_devices: "暂无设备"
+    paired: "已配对"

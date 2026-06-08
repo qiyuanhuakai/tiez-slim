@@ -358,6 +358,19 @@ fn cmd_status(socket_path: &std::path::Path, json_output: bool) -> i32 {
         println!("  {}: v{version}", t!("cli.title"));
         println!("  {}: {entry_count}", t!("cli.history"));
         println!("  {}: [{tags}]", t!("history.tag_label"));
+
+        if let Some(sync) = data.get("sync") {
+            let enabled = sync.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+            let device_id = sync
+                .get("device_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("—");
+            let state = sync.get("state").and_then(|v| v.as_str()).unwrap_or("disabled");
+            println!("  Sync (KDE Connect):");
+            println!("    enabled: {enabled}");
+            println!("    device_id: {device_id}");
+            println!("    state: {state}");
+        }
     }
     0
 }

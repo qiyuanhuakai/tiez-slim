@@ -776,3 +776,21 @@ cli:
     error_not_found: "Record with ID %{id} not found"
     error_io: "IO error: %{err}"
     error_parse: "Parse error: %{err}"
+
+settings:
+  sync:
+    title: "Sync (KDE Connect)"
+    feature_disabled: "KDE Connect feature is not enabled"
+    enable_hint: "Enable the kde_connect feature at compile time to use sync"
+    enable: "Enable sync"
+    status: "Status:"
+    device_id: "Device ID:"
+    state_disabled: "Disabled"
+    state_discovering: "Discovering devices..."
+    state_pairing: "Pairing with %{name}..."
+    state_connected: "Connected to %{name}"
+    state_error: "Error: %{err}"
+    show_qr: "Show QR Code"
+    paired_devices: "Paired Devices"
+    no_devices: "No devices yet"
+    paired: "Paired"

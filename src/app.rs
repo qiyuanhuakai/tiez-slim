@@ -444,6 +444,8 @@ struct AppPreferences {
     kde_connect_device_id: Option<String>,
     #[serde(default = "default_kde_connect_device_name")]
     kde_connect_device_name: String,
+    #[serde(default)]
+    sync_enabled: bool,
 
     // #6 CLI
     #[serde(default)]
@@ -591,6 +593,7 @@ impl Default for AppPreferences {
             kde_connect_enabled: false,
             kde_connect_device_id: None,
             kde_connect_device_name: "tiez-slim-linux".to_string(),
+            sync_enabled: false,
             cli_socket_path: None,
             builtin_actions_enabled: true,
             action_command_allowlist: String::new(),
@@ -744,6 +747,10 @@ pub struct ClipboardApp {
     pub(crate) kde_connect_enabled: bool,
     pub(crate) kde_connect_device_id: Option<String>,
     pub(crate) kde_connect_device_name: String,
+    pub(crate) sync_enabled: bool,
+    pub(crate) show_sync_qr: bool,
+    #[cfg(feature = "kde_connect")]
+    pub(crate) sync_manager: crate::sync::SyncManager,
     pub(crate) cli_socket_path: Option<String>,
     pub(crate) builtin_actions_enabled: bool,
     pub(crate) actions: Vec<crate::actions::Action>,
@@ -828,6 +835,9 @@ impl ClipboardApp {
         let autostart_enabled =
             platform::autostart_enabled().unwrap_or(preferences.autostart_enabled);
         let loaded_actions = storage.load_actions().unwrap_or_default();
+
+        #[cfg(feature = "kde_connect")]
+        let sync_storage = storage.clone();
 
         let mut app = Self {
             storage,
@@ -960,6 +970,10 @@ impl ClipboardApp {
             kde_connect_enabled: preferences.kde_connect_enabled,
             kde_connect_device_id: preferences.kde_connect_device_id,
             kde_connect_device_name: preferences.kde_connect_device_name,
+            sync_enabled: preferences.sync_enabled,
+            show_sync_qr: false,
+            #[cfg(feature = "kde_connect")]
+            sync_manager: crate::sync::SyncManager::new(sync_storage),
             cli_socket_path: preferences.cli_socket_path,
             builtin_actions_enabled: preferences.builtin_actions_enabled,
             actions: loaded_actions.clone(),
@@ -2216,6 +2230,7 @@ impl ClipboardApp {
             kde_connect_enabled: self.kde_connect_enabled,
             kde_connect_device_id: self.kde_connect_device_id.clone(),
             kde_connect_device_name: self.kde_connect_device_name.clone(),
+            sync_enabled: self.sync_enabled,
             cli_socket_path: self.cli_socket_path.clone(),
             builtin_actions_enabled: self.builtin_actions_enabled,
             action_command_allowlist: self.action_command_allowlist.clone(),
@@ -2259,6 +2274,16 @@ impl ClipboardApp {
             egui::WindowLevel::Normal
         };
         ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(level));
+    }
+
+    #[cfg(feature = "kde_connect")]
+    pub(crate) fn sync_manager(&self) -> &crate::sync::SyncManager {
+        &self.sync_manager
+    }
+
+    #[cfg(feature = "kde_connect")]
+    pub(crate) fn sync_manager_mut(&mut self) -> &mut crate::sync::SyncManager {
+        &mut self.sync_manager
     }
 
     pub(crate) fn persist_preferences(&mut self) {
