@@ -108,7 +108,7 @@ fn main() {
 
 // ── Locale detection ──────────────────────────────────────────────────
 
-    fn detect_locale() {
+fn detect_locale() {
     let lang = std::env::var("TIEZ_SLIM_LANG")
         .or_else(|_| std::env::var("LANG"))
         .or_else(|_| std::env::var("LC_MESSAGES"))
@@ -440,7 +440,6 @@ fn println_entry(entry: &ClipboardEntrySummary) {
     );
 }
 
-/// Truncate a string to `max_chars` characters, appending "..." if truncated.
 fn truncate_str(s: &str, max_chars: usize) -> String {
     if s.chars().count() <= max_chars {
         s.to_string()
