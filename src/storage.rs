@@ -1,5 +1,6 @@
 use crate::actions::{Action, ActionKind};
 use crate::encryption::SecureStore;
+use crate::snippets::Snippet;
 use crate::model::{
     ClipboardEntry, ClipboardEntrySummary, ClipboardKind, MAX_ENTRIES, RETENTION_DAYS,
     SelectionSource,
@@ -224,7 +225,22 @@ impl Storage {
                 last_used_at INTEGER
             );
             CREATE INDEX IF NOT EXISTS idx_actions_enabled ON actions(enabled);
-            CREATE INDEX IF NOT EXISTS idx_actions_sort ON actions(sort_order);",
+            CREATE INDEX IF NOT EXISTS idx_actions_sort ON actions(sort_order);
+
+            CREATE TABLE IF NOT EXISTS snippets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                template TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                icon TEXT NOT NULL DEFAULT '',
+                enabled INTEGER NOT NULL DEFAULT 1,
+                use_count INTEGER NOT NULL DEFAULT 0,
+                last_used_at INTEGER,
+                created_at INTEGER NOT NULL,
+                tags TEXT NOT NULL DEFAULT '[]'
+            );
+            CREATE INDEX IF NOT EXISTS idx_snippets_name ON snippets(name);
+            CREATE INDEX IF NOT EXISTS idx_snippets_enabled ON snippets(enabled);",
         )?;
         ensure_column(&conn, "clipboard_history", "html_content", "TEXT")?;
         ensure_column(&conn, "clipboard_history", "source_app_path", "TEXT")?;
@@ -771,6 +787,94 @@ impl Storage {
         conn.execute(
             "UPDATE actions SET last_used_at = ?1 WHERE id = ?2",
             params![at, id as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn save_snippet(&self, snippet: &Snippet) -> Result<i64> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let tags_json = serde_json::to_string(&snippet.tags).unwrap_or_else(|_| "[]".into());
+        if snippet.id == 0 {
+            conn.execute(
+                "INSERT INTO snippets
+                 (name, template, description, icon, enabled, use_count, last_used_at, created_at, tags)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                params![
+                    snippet.name,
+                    snippet.template,
+                    snippet.description,
+                    snippet.icon,
+                    snippet.enabled as i64,
+                    snippet.use_count,
+                    snippet.last_used_at,
+                    snippet.created_at,
+                    tags_json,
+                ],
+            )?;
+            Ok(conn.last_insert_rowid())
+        } else {
+            conn.execute(
+                "INSERT OR REPLACE INTO snippets
+                 (id, name, template, description, icon, enabled, use_count, last_used_at, created_at, tags)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                params![
+                    snippet.id,
+                    snippet.name,
+                    snippet.template,
+                    snippet.description,
+                    snippet.icon,
+                    snippet.enabled as i64,
+                    snippet.use_count,
+                    snippet.last_used_at,
+                    snippet.created_at,
+                    tags_json,
+                ],
+            )?;
+            Ok(snippet.id)
+        }
+    }
+
+    pub fn load_snippets(&self) -> Result<Vec<Snippet>> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let mut stmt = conn.prepare(
+            "SELECT id, name, template, description, icon, enabled,
+                    use_count, last_used_at, created_at, tags
+             FROM snippets ORDER BY use_count DESC, name ASC",
+        )?;
+        let snippets = stmt
+            .query_map([], |row| {
+                let tags_str: String = row.get(9)?;
+                let tags: Vec<String> =
+                    serde_json::from_str(&tags_str).unwrap_or_default();
+                Ok(Snippet {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    template: row.get(2)?,
+                    description: row.get(3)?,
+                    icon: row.get(4)?,
+                    enabled: row.get::<_, i64>(5)? != 0,
+                    use_count: row.get(6)?,
+                    last_used_at: row.get(7)?,
+                    created_at: row.get(8)?,
+                    tags,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(snippets)
+    }
+
+    pub fn delete_snippet(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        conn.execute("DELETE FROM snippets WHERE id = ?1", params![id])?;
+        Ok(())
+    }
+
+    pub fn increment_snippet_use_count(&self, id: i64) -> Result<()> {
+        let conn = self.conn.lock().expect("storage mutex poisoned");
+        let now = chrono::Utc::now().timestamp();
+        conn.execute(
+            "UPDATE snippets SET use_count = use_count + 1, last_used_at = ?1 WHERE id = ?2",
+            params![now, id],
         )?;
         Ok(())
     }
@@ -1534,5 +1638,78 @@ mod tests {
             .expect("list summaries");
         assert_eq!(summaries.len(), 1);
         assert_eq!(summaries[0].source, SelectionSource::Primary);
+    }
+
+    #[test]
+    fn test_snippets_crud() {
+        let storage = temp_storage();
+
+        let mut snippet = Snippet::new("GitHub PR", "https://github.com/{{org}}/{{repo}}/pull/{{num}}");
+        snippet.description = "Open a PR link".to_string();
+        snippet.icon = "🔗".to_string();
+        snippet.tags = vec!["dev".to_string(), "github".to_string()];
+        let id = storage.save_snippet(&snippet).expect("save snippet");
+        assert!(id > 0);
+
+        let snippets = storage.load_snippets().expect("load snippets");
+        assert_eq!(snippets.len(), 1);
+        assert_eq!(snippets[0].name, "GitHub PR");
+        assert_eq!(snippets[0].template, "https://github.com/{{org}}/{{repo}}/pull/{{num}}");
+        assert_eq!(snippets[0].description, "Open a PR link");
+        assert_eq!(snippets[0].icon, "🔗");
+        assert!(snippets[0].enabled);
+        assert_eq!(snippets[0].use_count, 0);
+        assert!(snippets[0].last_used_at.is_none());
+        assert_eq!(snippets[0].tags, vec!["dev".to_string(), "github".to_string()]);
+
+        storage.increment_snippet_use_count(id).expect("increment");
+        let snippets = storage.load_snippets().expect("load after increment");
+        assert_eq!(snippets[0].use_count, 1);
+        assert!(snippets[0].last_used_at.is_some());
+
+        storage.delete_snippet(id).expect("delete snippet");
+        let snippets = storage.load_snippets().expect("load after delete");
+        assert!(snippets.is_empty());
+    }
+
+    #[test]
+    fn test_snippets_ordering() {
+        let storage = temp_storage();
+
+        let mut a = Snippet::new("Alpha", "aaa");
+        a.use_count = 5;
+        storage.save_snippet(&a).expect("save a");
+
+        let mut b = Snippet::new("Beta", "bbb");
+        b.use_count = 10;
+        storage.save_snippet(&b).expect("save b");
+
+        let mut c = Snippet::new("Gamma", "ccc");
+        c.use_count = 10;
+        storage.save_snippet(&c).expect("save c");
+
+        let snippets = storage.load_snippets().expect("load");
+        assert_eq!(snippets.len(), 3);
+        assert_eq!(snippets[0].name, "Beta");
+        assert_eq!(snippets[1].name, "Gamma");
+        assert_eq!(snippets[2].name, "Alpha");
+    }
+
+    #[test]
+    fn test_snippets_upsert() {
+        let storage = temp_storage();
+
+        let mut snippet = Snippet::new("Test", "hello");
+        let id = storage.save_snippet(&snippet).expect("first save");
+
+        snippet.id = id;
+        snippet.name = "Updated Test".to_string();
+        snippet.template = "world".to_string();
+        storage.save_snippet(&snippet).expect("upsert");
+
+        let snippets = storage.load_snippets().expect("load");
+        assert_eq!(snippets.len(), 1);
+        assert_eq!(snippets[0].name, "Updated Test");
+        assert_eq!(snippets[0].template, "world");
     }
 }
