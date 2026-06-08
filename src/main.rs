@@ -21,7 +21,7 @@ fn main() -> anyhow::Result<()> {
 
     let dev_mode = dev_mode_enabled();
     let minimized = minimized_start_enabled();
-    let storage =
+    let mut storage =
         Storage::open(resolve_db_path()).context(rust_i18n::t!("error.open_db_failed"))?;
     storage
         .cleanup_expired()
@@ -32,6 +32,20 @@ fn main() -> anyhow::Result<()> {
     match IpcServer::start(ipc_storage, ipc_socket) {
         Ok(_server) => {}
         Err(e) => eprintln!("IPC server failed to start: {e}"),
+    }
+
+    let mut _migration_queue: Option<encryption::queue::MigrationQueue> = None;
+    #[cfg(feature = "secure_storage")]
+    match encryption::KeyringBackend::new() {
+        Ok(backend) => {
+            let enc: Arc<dyn encryption::SecureStore + Send + Sync> = Arc::new(backend);
+            storage.set_encryptor(enc.clone());
+            _migration_queue = Some(encryption::queue::MigrationQueue::start(
+                storage.clone(),
+                enc,
+            ));
+        }
+        Err(e) => eprintln!("encryption unavailable, storing plaintext: {e}"),
     }
 
     let data_dir = storage

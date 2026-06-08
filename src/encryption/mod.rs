@@ -5,6 +5,8 @@
 //!
 //! Ciphertext format: `enc:v1:<base64(nonce || ciphertext)>`
 
+pub mod queue;
+
 use anyhow::Result;
 #[cfg(feature = "secure_storage")]
 use anyhow::Context;
