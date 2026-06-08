@@ -344,6 +344,9 @@ settings:
     save_failed: "Failed to save action: %{err}"
     run_failed: "Failed to run action: %{err}"
     run_success: "Action executed successfully"
+    toolbar_button: "Toolbar ⚡ button"
+    popover_title: "Available Actions"
+    context_menu_title: "⚡ Run Action"
 
   primary_selection:
     title: "Primary Selection"

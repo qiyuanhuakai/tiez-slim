@@ -358,6 +358,9 @@ settings:
     save_failed: "保存动作失败: %{err}"
     run_failed: "执行动作失败: %{err}"
     run_success: "动作执行成功"
+    toolbar_button: "工具栏 ⚡ 按钮"
+    popover_title: "可用动作"
+    context_menu_title: "⚡ 执行动作"
 
   primary_selection:
     title: "主剪贴板(PRIMARY)"

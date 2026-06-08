@@ -34,7 +34,7 @@ const HISTORY_MAX_WIDTH: f32 = 560.0;
 const DEFAULT_WINDOW_SIZE: egui::Vec2 = egui::vec2(480.0, 680.0);
 const MIN_NORMAL_WINDOW_SIZE: egui::Vec2 = egui::vec2(320.0, 400.0);
 const RESIZE_HIT_SIZE: f32 = 8.0;
-const CARD_ACTION_WIDTH: f32 = 92.0;
+const CARD_ACTION_WIDTH: f32 = 120.0;
 const TOOLBAR_BUTTON_SIZE: f32 = 32.0;
 const TOOLBAR_ICON_SIZE: f32 = 16.0;
 const TOOLBAR_BUTTON_RADIUS: f32 = 9.0;
@@ -452,6 +452,8 @@ struct AppPreferences {
     // #1 Actions
     #[serde(default = "default_builtin_actions_enabled")]
     builtin_actions_enabled: bool,
+    #[serde(default)]
+    action_command_allowlist: String,
 }
 
 fn default_privacy_protection_kinds() -> Vec<String> {
@@ -465,7 +467,7 @@ fn default_privacy_protection_kinds() -> Vec<String> {
 }
 
 fn default_settings_panel_collapsed() -> Vec<bool> {
-    vec![false; 8]
+    vec![false; 9]
 }
 
 fn default_color_mode() -> String {
@@ -591,6 +593,7 @@ impl Default for AppPreferences {
             kde_connect_device_name: "tiez-slim-linux".to_string(),
             cli_socket_path: None,
             builtin_actions_enabled: true,
+            action_command_allowlist: String::new(),
         }
     }
 }
@@ -742,6 +745,17 @@ pub struct ClipboardApp {
     pub(crate) kde_connect_device_name: String,
     pub(crate) cli_socket_path: Option<String>,
     pub(crate) builtin_actions_enabled: bool,
+    pub(crate) actions: Vec<crate::actions::Action>,
+    pub(crate) action_editor: crate::ui::action_editor::ActionEditor,
+    pub(crate) test_pattern_open: bool,
+    pub(crate) test_pattern_text: String,
+    pub(crate) test_pattern_result: String,
+    pub(crate) action_command_allowlist: String,
+    action_matcher: crate::actions::matcher::ActionMatcher,
+    entry_matching_actions: HashMap<i64, Vec<crate::actions::Action>>,
+    action_executor: crate::actions::executor::ActionExecutor,
+    pub(crate) actions_popover: crate::ui::toolbar_actions::ActionsPopover,
+    pub(crate) pending_toolbar_action: Option<crate::actions::Action>,
     pub(crate) font_choices: Vec<String>,
     pub(crate) primary_font_search: String,
     pub(crate) fallback_font_search: String,
@@ -807,6 +821,7 @@ impl ClipboardApp {
 
         let autostart_enabled =
             platform::autostart_enabled().unwrap_or(preferences.autostart_enabled);
+        let loaded_actions = storage.load_actions().unwrap_or_default();
 
         let mut app = Self {
             storage,
@@ -940,6 +955,27 @@ impl ClipboardApp {
             kde_connect_device_name: preferences.kde_connect_device_name,
             cli_socket_path: preferences.cli_socket_path,
             builtin_actions_enabled: preferences.builtin_actions_enabled,
+            actions: loaded_actions.clone(),
+            action_editor: crate::ui::action_editor::ActionEditor::default(),
+            test_pattern_open: false,
+            test_pattern_text: String::new(),
+            test_pattern_result: String::new(),
+            action_command_allowlist: preferences.action_command_allowlist.clone(),
+            action_matcher: crate::actions::matcher::ActionMatcher::new(loaded_actions),
+            entry_matching_actions: HashMap::new(),
+            action_executor: {
+                let exec = crate::actions::executor::ActionExecutor::new();
+                let allowlist: Vec<String> = preferences
+                    .action_command_allowlist
+                    .lines()
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
+                exec.set_allowlist(allowlist);
+                exec
+            },
+            actions_popover: crate::ui::toolbar_actions::ActionsPopover::default(),
+            pending_toolbar_action: None,
             font_choices,
             primary_font_search: String::new(),
             fallback_font_search: String::new(),
@@ -1023,9 +1059,50 @@ impl ClipboardApp {
                     .retain(|id, _| visible_ids.contains(id));
                 self.image_textures.retain(|id, _| visible_ids.contains(id));
                 self.ensure_selection();
+                self.rebuild_entry_matching_actions();
             }
             Err(err) => self.status = format!("{}: {err}", t!("history.load_failed")),
         }
+    }
+
+    fn rebuild_entry_matching_actions(&mut self) {
+        self.action_matcher = crate::actions::matcher::ActionMatcher::new(self.actions.clone());
+        self.entry_matching_actions.clear();
+        for entry in &self.entries {
+            let matched = self.action_matcher.find_matching(&entry.preview);
+            if !matched.is_empty() {
+                let actions: Vec<crate::actions::Action> =
+                    matched.iter().map(|ca| ca.action.clone()).collect();
+                self.entry_matching_actions.insert(entry.id, actions);
+            }
+        }
+    }
+
+    pub(crate) fn matching_actions_for_content(
+        &self,
+        content: &str,
+    ) -> Vec<crate::actions::Action> {
+        self.action_matcher
+            .find_matching(content)
+            .iter()
+            .map(|ca| ca.action.clone())
+            .collect()
+    }
+
+    pub(crate) fn toolbar_actions(&self) -> Vec<crate::actions::Action> {
+        self.actions
+            .iter()
+            .filter(|a| a.enabled && a.toolbar_button)
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn execute_action(&self, action: &crate::actions::Action) {
+        let content = self
+            .selected_entry()
+            .map(|e| e.preview.clone())
+            .unwrap_or_default();
+        self.action_executor.execute_async(action, &content);
     }
 
     fn ensure_selection(&mut self) {
@@ -2102,6 +2179,7 @@ impl ClipboardApp {
             kde_connect_device_name: self.kde_connect_device_name.clone(),
             cli_socket_path: self.cli_socket_path.clone(),
             builtin_actions_enabled: self.builtin_actions_enabled,
+            action_command_allowlist: self.action_command_allowlist.clone(),
         }
     }
 
@@ -2237,6 +2315,7 @@ impl ClipboardApp {
         self.kde_connect_device_name = preferences.kde_connect_device_name;
         self.cli_socket_path = preferences.cli_socket_path;
         self.builtin_actions_enabled = preferences.builtin_actions_enabled;
+        self.action_command_allowlist = preferences.action_command_allowlist;
         self.theme = resolve_theme(&self.color_mode);
         configure_fonts(ctx, &self.font_selection());
         self.configure_style(ctx);
@@ -2667,6 +2746,7 @@ impl ClipboardApp {
                             self.apply_window_level(ctx);
                             self.persist_preferences();
                         }
+                        crate::ui::toolbar_actions::draw_toolbar_actions_button(ui, self);
                         if self.dev_mode
                             && toolbar_button(ui, "DEV", t!("tooltip.dev_tools"), &self.theme)
                                 .clicked()
@@ -2675,6 +2755,10 @@ impl ClipboardApp {
                         }
                     });
                 });
+
+                if let Some(action) = self.pending_toolbar_action.take() {
+                    self.execute_action(&action);
+                }
 
                 let show_search_tools = self.current_page == AppPage::Clipboard
                     && (self.show_search_box
@@ -3085,6 +3169,60 @@ impl ClipboardApp {
             {
                 pending_action = Some(CardAction::Delete);
             }
+            if let Some(matching_actions) = self.entry_matching_actions.get(&entry_id).cloned()
+                && !matching_actions.is_empty()
+            {
+                button_rect = button_rect.translate(egui::vec2(CARD_ACTION_BUTTON_SIZE + 4.0, 0.0));
+                let action_btn_response = action_bar_button(
+                    ui,
+                    egui::Id::new(("card_action", entry_id, "action")),
+                    button_rect,
+                    ToolbarIcon::Action,
+                    self.theme.accent,
+                    hover_bg,
+                );
+                let popup_id = ui.make_persistent_id(("actions_popover", entry_id));
+                if action_btn_response.clicked() {
+                    if matching_actions.len() == 1 {
+                        self.action_executor
+                            .execute_async(&matching_actions[0], &entry.preview);
+                    } else {
+                        ui.memory_mut(|mem| mem.toggle_popup(popup_id));
+                    }
+                }
+                let entry_preview = entry.preview.clone();
+                let mut selected_idx: Option<usize> = None;
+                egui::popup::popup_below_widget(
+                    ui,
+                    popup_id,
+                    &action_btn_response,
+                    egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+                    |ui| {
+                        ui.set_min_width(140.0);
+                        ui.label(
+                            egui::RichText::new(t!("settings.actions.popover_title"))
+                                .size(11.0)
+                                .color(ui.visuals().widgets.inactive.fg_stroke.color),
+                        );
+                        ui.separator();
+                        for (i, action) in matching_actions.iter().enumerate() {
+                            let label = if action.icon.is_empty() {
+                                action.name.clone()
+                            } else {
+                                format!("{} {}", action.icon, action.name)
+                            };
+                            if ui.selectable_label(false, label).clicked() {
+                                selected_idx = Some(i);
+                            }
+                        }
+                    },
+                );
+                if let Some(idx) = selected_idx {
+                    self.action_executor
+                        .execute_async(&matching_actions[idx], &entry_preview);
+                    ui.memory_mut(|mem| mem.close_popup());
+                }
+            }
         }
 
         if let Some(action) = pending_action {
@@ -3126,8 +3264,89 @@ impl ClipboardApp {
         }
         if response.secondary_clicked() {
             self.select_entry(entry.id);
-            self.paste_entry(ui.ctx(), entry, true);
+            let popup_id = ui.make_persistent_id(("context_menu", entry.id));
+            ui.memory_mut(|m| m.open_popup(popup_id));
         }
+
+        {
+            let popup_id = ui.make_persistent_id(("context_menu", entry.id));
+            if ui.memory(|m| m.is_popup_open(popup_id)) {
+                let mut action_to_execute = None;
+                egui::popup::popup_below_widget(
+                    ui,
+                    popup_id,
+                    &response,
+                    egui::popup::PopupCloseBehavior::CloseOnClickOutside,
+                    |ui| {
+                        if let Some(action) =
+                            crate::ui::context_menu_actions::show_entry_actions_menu(
+                                ui, self, entry,
+                            )
+                        {
+                            action_to_execute = Some(action);
+                        }
+                        ui.separator();
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(t!("common.copy")).size(12.0),
+                                )
+                                .fill(egui::Color32::TRANSPARENT),
+                            )
+                            .clicked()
+                        {
+                            self.select_entry(entry.id);
+                            self.paste_entry(ui.ctx(), entry, false);
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(t!("tooltip.pin_toggle")).size(12.0),
+                                )
+                                .fill(egui::Color32::TRANSPARENT),
+                            )
+                            .clicked()
+                        {
+                            match self.storage.toggle_pin(entry.id) {
+                                Ok(()) => self.refresh_entries(),
+                                Err(err) => {
+                                    self.status = format!("{}: {err}", t!("history.pin_failed"))
+                                }
+                            }
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new(t!("common.delete")).size(12.0),
+                                )
+                                .fill(egui::Color32::TRANSPARENT),
+                            )
+                            .clicked()
+                        {
+                            match self.storage.delete(entry.id) {
+                                Ok(()) => {
+                                    self.status = t!("history.deleted_record").to_string();
+                                    if self.selected_id == Some(entry.id) {
+                                        self.selected_id = None;
+                                    }
+                                    self.refresh_entries();
+                                }
+                                Err(err) => {
+                                    self.status = format!("{}: {err}", t!("history.delete_failed"))
+                                }
+                            }
+                            ui.memory_mut(|m| m.close_popup());
+                        }
+                    },
+                );
+                if let Some(action) = action_to_execute {
+                    self.execute_action(&action);
+                }
+            }
+        }
+
         false
     }
 
@@ -4401,6 +4620,30 @@ impl eframe::App for ClipboardApp {
 
         self.draw_dev_panel(ctx, frame);
 
+        if let Some(result) = crate::ui::action_editor::draw_action_editor_dialog(ctx, self) {
+            match result {
+                crate::ui::action_editor::EditorResult::Save(action) => {
+                    if let Err(err) = self.storage.save_action(&action) {
+                        self.status = format!("{}: {err}", t!("settings.actions.save_failed"));
+                    } else {
+                        self.actions = self.storage.load_actions().unwrap_or_default();
+                        self.rebuild_entry_matching_actions();
+                        self.status = t!("settings.actions.action_enabled").to_string();
+                    }
+                }
+                crate::ui::action_editor::EditorResult::Delete(id) => {
+                    if let Err(err) = self.storage.delete_action(id) {
+                        self.status = format!("{}: {err}", t!("settings.actions.save_failed"));
+                    } else {
+                        self.actions = self.storage.load_actions().unwrap_or_default();
+                        self.rebuild_entry_matching_actions();
+                        self.status = t!("settings.actions.action_deleted").to_string();
+                    }
+                }
+                crate::ui::action_editor::EditorResult::Cancel => {}
+            }
+        }
+
         if self.last_cleanup.elapsed() >= CLEANUP_INTERVAL {
             self.last_cleanup = Instant::now();
             let storage = self.storage.clone();
@@ -4804,6 +5047,7 @@ enum ToolbarIcon {
     Unpin,
     Open,
     Dev,
+    Action,
 }
 
 impl ToolbarIcon {
@@ -5024,6 +5268,18 @@ fn paint_toolbar_icon(
             painter.line_segment([p(16.0, 8.0), p(20.0, 12.0)], stroke);
             painter.line_segment([p(20.0, 12.0), p(16.0, 16.0)], stroke);
             painter.line_segment([p(14.0, 4.0), p(10.0, 20.0)], stroke);
+        }
+        ToolbarIcon::Action => {
+            let bolt = [
+                p(13.0, 3.0),
+                p(8.0, 13.0),
+                p(12.0, 13.0),
+                p(11.0, 21.0),
+                p(16.0, 11.0),
+                p(12.0, 11.0),
+                p(13.0, 3.0),
+            ];
+            painter.add(egui::Shape::line(bolt.to_vec(), stroke));
         }
     }
 }
