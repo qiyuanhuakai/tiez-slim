@@ -65,10 +65,12 @@ Generated/cache directories such as `.zig-cache/`, `.dvui-cache/`, `.opencode/`,
 
 ```bash
 cargo run
-cargo run -- --dev
+cargo dev
+cargo ci  # 首选完整验证：fmt/check/test/clippy/i18n
+cargo run -- dev
 TIEZ_SLIM_LINUX_DEV=1 cargo run
 scripts/generate_emoji_data.py
-cargo test
+cargo test  # 仅用于局部调试；完成前优先 cargo ci
 cargo build --release
 ```
 

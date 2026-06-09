@@ -1,11 +1,12 @@
 # tiez-slim-linux 产品路线图（2026 H2）
 
 > **生成日期**：2026-06-06  
-> **最新更新**：2026-06-07  
-> **版本**：v0.3.0（Phase 0-3 已完成，9/10 功能交付）  
+> **最新更新**：2026-06-09  
+> **版本**：v0.3.2（Phase 0-3 已完成，10/10 功能交付；性能与布局维护完成）  
 > **范围**：基于 2026-06 的功能差距分析与同步方案调研，规划 10 项优先功能的实施路径  
 > **v0.3 变更**：确认 i18n 作为 Phase 0 首要任务；详细规划按真实交付顺序重排；Phase 1 改为隐私/备份/自动化/X11/搜索并行补强；后续功能一律不得新增硬编码用户可见字符串  
-> **v0.3.1 变更**：Phase 0 #8 i18n 已交付：409 keys（zh-CN 源 + en-US 翻译，100% 覆盖），rust-i18n v4 + `%{var}` 占位符，启动时 `set_app_locale()` 修复 follow-system 语义，统一 `searchable_combo_row` 自定义下拉控件；9 commits 落地。  
+> **v0.3.1 变更**：Phase 0 #8 i18n 已交付：752 keys（zh-CN 源 + en-US 翻译，100% 覆盖），rust-i18n v4 + `%{var}` 占位符，启动时 `set_app_locale()` 修复 follow-system 语义，统一 `searchable_combo_row` 自定义下拉控件。  
+> **v0.3.2 变更**：KDE Connect 改为默认编译启用并修复 feature 测试；Primary Selection 去重为单一平台 watcher；搜索刷新加 debounce；Emoji 收藏页取消每帧扫盘；设置折叠状态补齐迁移；卡片标签限量显示 +N，顶部内容类型过滤固定三行布局。  
 > **关联文档**：`AGENTS.md`（项目知识库）、`README.md`（用户文档）
 
 ---
@@ -16,18 +17,18 @@
 
 | 优先级 | 项 | 功能 | 价值 | 工作量 | 阶段 | 排序理由 |
 |---|---|---|---|---|---|---|
-| ✅ P0-1 | 8 | i18n（zh + en） | **极高** | L | **Phase 0 完成** | 已交付：409 keys 100% 覆盖，rust-i18n v4 + `%{var}`，9 commits（见 §2 #8 实际产出） |
-| P1-1 | 3 | 应用黑名单 + 私有模式 | **极高** | S | Phase 1 | 剪贴板管理器必须先让用户敢长期记录敏感环境中的内容 |
-| P1-2 | 5 | Export/Import + 自动备份 | **极高** | S | Phase 1 | 已支持置顶、标签、收藏和文件/图片历史；没有备份会削弱长期数据信任 |
-| P1-3 | 1 | 正则→命令 Actions 系统 | **极高** | M+ | Phase 1 | 从“历史查看器”升级为“生产力平台”，是竞品级差异化核心 |
-| P1-4 | 2 | Primary Selection (X11) 跟踪 | 高 | M | Phase 1 | X11 剪贴板管理器基线能力；当前只捕获 CLIPBOARD 会漏掉鼠标选区流 |
-| P1-5 | 10 | fuzzy search | 高 | S-M | Phase 1 | 历史条目越多越依赖搜索；低成本提升每日使用效率 |
-| P2-1 | 4 | KDE Connect 集成 | 中-高 | M-L | Phase 2 | Android 同步价值高，但受 Android 10+ 剪贴板限制，先低于本地核心能力 |
-| P2-2 | 7 | 数据库加密 | 中-高 | M | Phase 2 | 在黑名单/备份之后补齐 DB 泄露场景下的深层隐私保护 |
-| P2-3 | 6 | CLI 配套（`tiez-cli`） | 中 | M | Phase 2 | 对 tiling WM/脚本用户重要；适合等核心状态模型稳定后实现 IPC |
-| P3-1 | 9 | Snippet 模板 | 中 | M | Phase 3 | 有差异化，但应在 Actions/搜索/导出之后，避免过早扩大维护面 |
+| ✅ P0-1 | 8 | i18n（zh + en） | **极高** | L | **Phase 0 完成** | 已交付：752 keys 100% 覆盖，rust-i18n v4 + `%{var}`（见 §2 #8 实际产出） |
+| ✅ P1-1 | 3 | 应用黑名单 + 私有模式 | **极高** | S | **Phase 1 完成** | 已交付：黑名单、私有模式、热键与设置联动 |
+| ✅ P1-2 | 5 | Export/Import + 自动备份 | **极高** | S | **Phase 1 完成** | 已交付：导入导出、自动备份、保留策略 |
+| ✅ P1-3 | 1 | 正则→命令 Actions 系统 | **极高** | M+ | **Phase 1 完成** | 已交付：工具栏、右键菜单、auto-trigger、设置编辑器 |
+| ✅ P1-4 | 2 | Primary Selection (X11) 跟踪 | 高 | M | **Phase 1 完成** | 已交付：XFixes 事件订阅 + 轮询降级；v0.3.2 去除重复轮询 |
+| ✅ P1-5 | 10 | fuzzy search | 高 | S-M | **Phase 1 完成** | 已交付：nucleo fuzzy + 高亮；v0.3.2 加搜索 debounce |
+| ✅ P2-1 | 4 | KDE Connect 集成 | 中-高 | M-L | **Phase 2 完成** | 已交付：默认编译启用，设置页同步开关与 QR/状态 UI |
+| ✅ P2-2 | 7 | 数据库加密 | 中-高 | M | **Phase 2 完成** | 已交付：feature-gated secure storage 与敏感内容策略 |
+| ✅ P2-3 | 6 | CLI 配套（`tiez-cli`） | 中 | M | **Phase 2 完成** | 已交付：Unix socket IPC 与 CLI 子命令 |
+| ✅ P3-1 | 9 | Snippet 模板 | 中 | M | **Phase 3 完成** | 已交付：模板、变量插值、设置 UI、picker 热键、IPC |
 
-**总工作量估算**：约 **53 个工作日**（约 10.5 周全职），分阶段并行可压缩到 **3.5-4.5 个月**。
+**总工作量估算**：约 **53 个工作日**（约 10.5 周全职）；截至 v0.3.2，10 项规划功能均已进入源码实现，后续重点转为稳定性、性能与真实设备 QA。
 
 **为什么 i18n 必须最先做**：tiez-slim 当前用户可见字符串仍以中文硬编码为主。ROADMAP 后续每个功能都会新增设置页、toast、错误提示、托盘菜单和 README 章节；若等功能做完再抽取，会同时重写 UI、文案和测试。Phase 0 投入 1-2 周建立 `tr!()`/locale/缺失键检查后，后续功能只需按规范新增 key。
 
@@ -117,7 +118,7 @@ graph TD
 
 ### #8 i18n（zh + en）— **Phase 0 基础设施** ✅ 已完成（2026-06-07）
 
-> **状态**：✅ 完成（9 commits, 409 keys, 100% 覆盖）  
+> **状态**：✅ 完成（752 keys, 100% 覆盖）  
 > **实际工作量**：~1.5 周（含 review 修复）  
 > **v0.3.1 之前**：原文按 Phase A-E 规划交付；实际一次性集成 5 个阶段（框架 + 提取 + UI + CLI + 文档）+ 2 个用户肉眼 review 修复 + 1 个微调 + 1 个 fmt 修复
 
@@ -147,8 +148,8 @@ cba4f1b style: apply cargo fmt across codebase
 | `src/storage.rs` | 11 处 CJK → `t!()` |
 | `src/main.rs` | 2 处 + `i18n!("locales", fallback = "en-US")` |
 | `src/platform/{mod,linux,windows}.rs` | 51 处 CJK → `t!()`（tray 菜单、错误消息） |
-| `locales/zh-CN.yml` | **409 keys 源文件**（`common.*` / `settings.*` / `status.*` / `error.*` / `history.*` / `emoji.*` / `symbol.*` / `clipboard.*` / `platform.*` / `tooltip.*` / `sound.*`） |
-| `locales/en-US.yml` | **409 keys 翻译文件**，100% 覆盖 |
+| `locales/zh-CN.yml` | **752 keys 源文件**（`common.*` / `settings.*` / `status.*` / `error.*` / `history.*` / `emoji.*` / `symbol.*` / `clipboard.*` / `platform.*` / `tooltip.*` / `sound.*` 等） |
+| `locales/en-US.yml` | **752 keys 翻译文件**，100% 覆盖 |
 | `scripts/i18n-check.sh` | 用 `en_nonempty / total` 计算真实 coverage，1 位小数 |
 | `README.md` | 中英双语，加 `text` language tag（markdownlint MD040） |
 
@@ -164,7 +165,7 @@ cba4f1b style: apply cargo fmt across codebase
 - `cargo fmt --all -- --check` exit 0
 - `cargo clippy -- -D warnings` exit 0
 - `cargo test` 77/77 passed
-- `bash scripts/i18n-check.sh` 输出 `zh-CN: 409 keys, en-US: 409 non-empty, coverage: 100.0%`
+- `bash scripts/i18n-check.sh` 输出 `zh-CN: 752 keys, en-US: 752 non-empty, coverage: 100.0%`
 - 启动日志（5 场景全验证）:
   - 默认 DB + LANG=zh_CN → `locale=zh-CN, zh-CN=100%, en-US=100%`
   - DB 显式 en-US → `locale=en-US`
@@ -235,7 +236,7 @@ cba4f1b style: apply cargo fmt across codebase
 - [x] 切换语言为 `zh-CN` → 全部恢复中文
 - [x] 缺失翻译键 → 显式标记为 `[MISSING: key.path]` 而非崩溃（实际通过 `log-miss-tr` feature 日志到 stderr）
 - [x] 启动日志显示当前 locale 与翻译覆盖率
-- [x] `i18n-check.sh` 在 CI 中可运行（输出 `zh-CN: 409 keys, en-US: 409 non-empty, coverage: 100.0%`）
+- [x] `i18n-check.sh` 在 CI 中可运行（输出 `zh-CN: 752 keys, en-US: 752 non-empty, coverage: 100.0%`）
 - [x] Phase 1+ 新增功能自动继承 i18n 框架（开发者只需 `t!()` 宏）
 
 #### 风险与权衡
@@ -1077,19 +1078,19 @@ cba4f1b style: apply cargo fmt across codebase
 | 阶段 | 状态 | 项 | 工作量（人天） | 累计 |
 |---|---|---|---|---|
 | **Phase 0** | ✅ 已完成 | #8 i18n（zh + en） | 9 | 9 |
-| **Phase 1** | 📋 待开始 | #3 黑名单 + 私有模式 | 3 | 12 |
+| **Phase 1** | ✅ 已完成 | #3 黑名单 + 私有模式 | 3 | 12 |
 | | | #5 Export/Import + 备份 | 3 | 15 |
 | | | #1 Actions (Option D) | 8 | 23 |
 | | | #2 Primary Selection (XFixes) | 5 | 28 |
 | | | #10 fuzzy search | 3 | 31 |
-| **Phase 2** | 📋 待开始 | #4 KDE Connect | 6 | 37 |
+| **Phase 2** | ✅ 已完成 | #4 KDE Connect | 6 | 37 |
 | | | #7 DB 加密 | 6 | 43 |
 | | | #6 CLI 配套 | 5 | 48 |
-| **Phase 3** | 📋 待开始 | #9 Snippets（模式镜像 saved_tags） | 5 | 53 |
+| **Phase 3** | ✅ 已完成 | #9 Snippets（模式镜像 saved_tags） | 5 | 53 |
 
-**总计**：约 **53 人天** ≈ **10.5 周全职**（v0.3 主要调整为 i18n 后先补隐私/备份，再做自动化/X11/搜索）  
-**已完成**：9 人天（Phase 0 i18n）  
-**剩余**：44 人天（Phase 1-3）
+**总计**：约 **53 人天** ≈ **10.5 周全职**（计划估算保留作历史参考）  
+**已完成**：53 人天（Phase 0-3，10/10 项源码实现）  
+**剩余**：0 人天（后续为稳定性、性能、真实设备 QA 与打包发布）
 
 ### 建议时间表（单人串行）
 
@@ -1106,19 +1107,19 @@ cba4f1b style: apply cargo fmt across codebase
    │            │            │            │  4 周      │            │
 ```
 
-**实际进度（截至 2026-06-07）**：Phase 0 已完成，提前进入 Phase 1 准备  
-**目标**：**2026-11 中**完成全部 10 项，发布 v0.4.0（计划不变）
+**实际进度（截至 2026-06-09）**：Phase 0-3 均已进入源码实现；v0.3.2 完成性能、KDE 默认启用、设置折叠迁移与标签布局维护。  
+**目标**：后续转入真实设备 KDE Connect QA、打包发布与长期稳定性验证。
 
 ### 关键里程碑
 
 | 里程碑 | 状态 | 日期 | 完成项 | 验证方式 |
 |---|---|---|---|---|
-| **M0**: i18n 上线 | ✅ 已完成 | 2026-06-07（提前 38 天） | #8 | 切换语言 → 全 UI 英文/中文；缺失 key 检查可运行；374 keys 100% 覆盖 |
+| **M0**: i18n 上线 | ✅ 已完成 | 2026-06-07（提前 38 天） | #8 | 切换语言 → 全 UI 英文/中文；缺失 key 检查可运行；752 keys 100% 覆盖 |
 | **M1**: 信任底座上线 | ✅ 已完成 | 2026-06-08 | #3, #5 | KeePassXC 黑名单不记录；退出自动备份；导出/导入可还原 |
 | **M2**: 核心工作流完成 | ✅ 已完成 | 2026-06-08 | #1, #2, #10 | URL→动作执行；PRIMARY 捕获；模糊搜索高亮与延迟达标 |
 | **M3**: 扩展能力完成 | ✅ 已完成 | 2026-06-08 | #4, #7, #6 | KDE Connect UI + CLI status；敏感条目加密；CLI 完整子命令 |
-| **M4**: 差异化完成 | 📋 待开始 | 2026-11-15 | #9 | Snippet 热键插入；release candidate + 完整 release notes |
-| **Release v0.4.0** | 📋 待开始 | **2026-11-30** | 全部 | 打包发布 |
+| **M4**: 差异化完成 | ✅ 已完成 | 2026-06-09 | #9 | Snippet 模板、变量插值、picker 热键、IPC 子命令 |
+| **Release v0.4.0** | 🧪 QA/打包阶段 | TBD | 全部 | 真实设备同步 QA、打包发布、release notes |
 
 ---
 
@@ -1177,10 +1178,11 @@ cba4f1b style: apply cargo fmt across codebase
 | **2026-06-06** | **Primary Selection 实现：XFixes 事件订阅** | 零 CPU 开销，事件驱动；现有 x11rb 集成简单 |
 | **2026-06-06** | **右键键位迁移：右键=菜单，Shift+右键=原富文本粘贴** | 工具栏 ⚡ 按钮 + context menu 需要腾出右键键位 |
 | **2026-06-06** | **路线图 v0.3 重排：用户确认先实现 i18n** | 先建立语言基础设施，后续隐私/备份/Actions/Primary/同步/CLI/Snippets 全部按 locale key 接入 |
-| **2026-06-07** | **路线图 v0.3.1：Phase 0 #8 i18n 交付完成** | 409 keys（zh-CN 源 + en-US 翻译 100% 覆盖），rust-i18n v4 + `%{var}` 占位符语法，启动时 `set_app_locale()` 修复 follow-system 持久化语义，自定义 `searchable_combo_row` 统一下拉；9 commits；F1-F4 final wave 全部 APPROVE；M0 提前 38 天达成 |
+| **2026-06-07** | **路线图 v0.3.1：Phase 0 #8 i18n 交付完成** | 752 keys（zh-CN 源 + en-US 翻译 100% 覆盖），rust-i18n v4 + `%{var}` 占位符语法，启动时 `set_app_locale()` 修复 follow-system 持久化语义，自定义 `searchable_combo_row` 统一下拉；M0 提前 38 天达成 |
 | **2026-06-07** | **i18n 关键设计决策**：默认语言从 zh-CN 改为 follow-system | 用户微调要求 + 启动时 `detect_system_locale()` 正确处理，避免锁定特定 locale |
 | **2026-06-07** | **i18n 关键设计决策**：rust-i18n v4 占位符用 `%{var}`（不是 `{var}`） | 由 4.1.0 文档明确；v0.3 实施时误用 `{var}` 致 101 个 / 文件不替换，用户肉眼发现后修复 |
-| **2026-06-08** | **v0.3.0 发布：M1-M3 全部完成，9/10 功能交付** | #1 Actions, #2 Primary, #3 黑名单+私有, #4 KDE Connect, #5 备份, #6 CLI, #7 加密, #8 i18n, #10 模糊搜索；374 i18n keys；203+ tests；#9 Snippets 待 v0.4 |
+| **2026-06-08** | **v0.3.0：M1-M3 全部完成** | #1 Actions, #2 Primary, #3 黑名单+私有, #4 KDE Connect, #5 备份, #6 CLI, #7 加密, #8 i18n, #10 模糊搜索 |
+| **2026-06-09** | **v0.3.2：10/10 功能状态校准 + 性能/布局维护** | #9 Snippets 已实现；KDE Connect 默认编译启用；Primary Selection 单 watcher + echo guard；搜索 debounce；Emoji 收藏页取消每帧扫盘；设置折叠位补齐迁移；卡片标签限量 +N；顶部内容类型过滤固定三行 |
 | TBD | 待用户确认 Q2-Q10 | — |
 
 ---

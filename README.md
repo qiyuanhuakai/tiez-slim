@@ -28,8 +28,8 @@ Rust 原生的轻量剪贴板管理器。原始上游为 [`jimuzhe/tiez-clipboar
 - 导出/导入与自动备份：支持将全部历史、标签和设置导出为 JSON 文件，可从 JSON 文件导入（自动去重）；关闭应用时可自动备份，保留份数可配置；数据管理面板含导出/导入/备份/立即备份/打开备份目录等操作。
 - 模糊搜索：基于 nucleo-matcher 的高性能模糊搜索，支持拼写纠错（如 `cllpboard` 匹配 `clipboard`）和中文模糊匹配；搜索结果按相关度排序，匹配字符高亮显示；可在设置中切换回传统子串搜索。
 - 数据库加密（opt-in）：通过 `secure_storage` feature gate 启用，使用 AES-256-GCM 加密敏感条目；密钥通过系统 keyring（GNOME Keyring / KWallet）管理；启用后标记为敏感的条目自动加密存储，读取时自动解密；支持批量加密/解密迁移，带 LRU 缓存优化读取性能。
-- KDE Connect 同步（opt-in）：通过 `kde_connect` feature gate 启用，支持与 Android 设备通过 KDE Connect 协议同步剪贴板；设置面板含启用开关、设备 ID 显示、QR 码配对、已发现设备列表；配对后双向同步，带 echo 防重复机制。
-- 国际化（i18n）：完整双语支持（zh-CN + en-US），374 个翻译键，100% 覆盖率；使用 rust-i18n v4，启动时自动检测系统语言，支持手动切换；所有用户可见字符串均通过 `t!()` 宏引用，无硬编码。
+- KDE Connect 同步：默认编译启用，支持与 Android 设备通过 KDE Connect 协议同步剪贴板；设置面板含启用开关、设备 ID 显示、QR 码配对、已发现设备列表；配对后双向同步，带 echo 防重复机制。
+- 国际化（i18n）：完整双语支持（zh-CN + en-US），752 个翻译键，100% 覆盖率；使用 rust-i18n v4，启动时自动检测系统语言，支持手动切换；所有用户可见字符串均通过 `t!()` 宏引用，无硬编码。
 
 ## 使用方法
 
@@ -39,15 +39,21 @@ Rust 原生的轻量剪贴板管理器。原始上游为 [`jimuzhe/tiez-clipboar
 
 ```bash
 cargo run
+cargo dev          # 等价于 cargo run --bin tiez-slim-linux -- dev
+cargo ci           # 串行运行 cargo fmt/check/test/clippy/i18n
 cargo run -- --db-path /path/to/clipboard.db
 TIEZ_SLIM_LINUX_DB_PATH=/path/to/clipboard.db cargo run
-cargo test
+cargo test         # 局部调试可用；提交前优先 cargo ci
 cargo build --release
 ```
 
 GUI 调试模式：
 
 ```bash
+cargo dev
+# 或显式转发参数
+cargo run --bin tiez-slim-linux -- dev
+# 兼容旧写法
 cargo run -- --dev
 # 或
 TIEZ_SLIM_LINUX_DEV=1 cargo run
@@ -223,6 +229,8 @@ locales/
 3. **验证**：运行以下命令检查一致性：
 
    ```bash
+   cargo ci
+   # 或仅检查翻译键
    bash scripts/i18n-check.sh
    ```
 
@@ -230,5 +238,5 @@ locales/
 
 - 键名使用 `section.subsection.label` 命名空间格式
 - 所有字符串值使用 `"双引号"` 括起
-- 占位符使用 `{placeholder}` 格式（如 `{count}`、`{err}`）
+- 占位符使用 rust-i18n v4 的 `%{placeholder}` 格式（如 `%{count}`、`%{err}`）
 - en-US 文件中**不能**出现中文（CJK）字符
