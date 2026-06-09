@@ -1,4 +1,4 @@
-use crate::app::{ClipboardApp, HotkeyTarget};
+use crate::app::{APP_ID, ClipboardApp, HotkeyTarget, filter_chip};
 use crate::platform;
 use crate::ui::settings::hotkey_single_record_row;
 use crate::ui::widgets::{macos_collapsible_group, macos_toggle};
@@ -7,6 +7,7 @@ use rust_i18n::t;
 
 const PRIVACY_PANEL_INDEX: usize = 7;
 const SENSITIVE_KINDS: &[&str] = &["phone", "idcard", "email", "secret", "password"];
+const OWN_WINDOW_CLASSES: &[&str] = &[APP_ID, "tiez-slim"];
 
 pub fn draw_privacy_panel(ui: &mut egui::Ui, app: &mut ClipboardApp, _ctx: &egui::Context) {
     let prev = app
@@ -61,10 +62,12 @@ fn draw_sensitive_detection(ui: &mut egui::Ui, app: &mut ClipboardApp) {
 
         let mut changed = false;
         ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
             for kind in SENSITIVE_KINDS {
                 let mut enabled = app.privacy_protection_kinds.contains(&kind.to_string());
                 let label = format!("settings.clipboard.sensitive_kind_{kind}");
-                if ui.checkbox(&mut enabled, t!(label)).changed() {
+                if filter_chip(ui, t!(label), enabled, &app.theme).clicked() {
+                    enabled = !enabled;
                     if enabled && !app.privacy_protection_kinds.contains(&kind.to_string()) {
                         app.privacy_protection_kinds.push(kind.to_string());
                     } else if !enabled {
@@ -156,6 +159,7 @@ fn draw_exclusion_list(ui: &mut egui::Ui, app: &mut ClipboardApp) {
         .button(t!("settings.exclusion_list.current_window"))
         .clicked()
         && let Some(wm_class) = platform::active_window_class()
+        && !is_own_window_class(&wm_class)
         && !app.app_exclusion_list.contains(&wm_class)
     {
         app.app_exclusion_list.push(wm_class);
@@ -164,12 +168,6 @@ fn draw_exclusion_list(ui: &mut egui::Ui, app: &mut ClipboardApp) {
 }
 
 fn draw_private_mode(ui: &mut egui::Ui, app: &mut ClipboardApp) {
-    ui.label(
-        egui::RichText::new(t!("settings.private_mode.enable"))
-            .size(13.0)
-            .strong(),
-    );
-    ui.add_space(2.0);
     ui.label(
         egui::RichText::new(t!("settings.private_mode.enable_hint"))
             .size(11.0)
@@ -229,4 +227,11 @@ fn draw_private_mode(ui: &mut egui::Ui, app: &mut ClipboardApp) {
             egui::Color32::WHITE,
         );
     }
+}
+
+fn is_own_window_class(wm_class: &str) -> bool {
+    let normalized = wm_class.trim().to_ascii_lowercase();
+    OWN_WINDOW_CLASSES
+        .iter()
+        .any(|class| normalized == class.to_ascii_lowercase())
 }

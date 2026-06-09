@@ -1,5 +1,5 @@
 use crate::clipboard::{self, ClipboardEvent};
-use crate::emoji_data::{ALL_TWEMOJI_EMOJIS, EMOJI_GROUPS, EmojiGroup};
+use crate::emoji_data::{EMOJI_GROUPS, EmojiGroup};
 use crate::model::{ClipboardEntry, ClipboardEntrySummary, ClipboardKind, SelectionSource};
 use crate::platform;
 use crate::sound::{self, SoundEffect};
@@ -25,7 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const APP_DISPLAY_NAME: &str = "tiez-slim";
-const APP_ID: &str = "tiez-slim-linux";
+pub(crate) const APP_ID: &str = "tiez-slim-linux";
 const APP_REPO_URL: &str = "https://github.com/qiyuanhuakai/tiez-slim-linux";
 const PREFERENCES_KEY: &str = "ui.tiez_slim_linux";
 const LEGACY_PREFERENCES_KEY: &str = "ui.native_tiez";
@@ -35,8 +35,6 @@ const HISTORY_MAX_WIDTH: f32 = 560.0;
 const DEFAULT_WINDOW_SIZE: egui::Vec2 = egui::vec2(480.0, 680.0);
 const MIN_NORMAL_WINDOW_SIZE: egui::Vec2 = egui::vec2(320.0, 400.0);
 const RESIZE_HIT_SIZE: f32 = 8.0;
-const CARD_ACTION_WIDTH: f32 = 120.0;
-const CARD_TAG_RESERVED_ACTION_WIDTH: f32 = CARD_ACTION_WIDTH + 12.0;
 const COMPACT_CARD_TAG_LIMIT: usize = 2;
 const REGULAR_CARD_TAG_LIMIT: usize = 5;
 const TOOLBAR_BUTTON_SIZE: f32 = 32.0;
@@ -3056,19 +3054,27 @@ impl ClipboardApp {
     }
 
     fn draw_tag_filters(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new(t!("history.tag_label")).color(self.theme.muted));
-            let all_selected = self.tag_filter.is_none();
-            if filter_chip(ui, t!("history.filter_all"), all_selected, &self.theme).clicked() {
-                self.set_tag_filter(None);
-            }
-            let tags = self.saved_tags.clone();
-            for tag in tags {
-                let selected = self.tag_filter.as_ref() == Some(&tag);
-                if filter_chip(ui, &tag, selected, &self.theme).clicked() {
-                    self.set_tag_filter(Some(tag));
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 3.0;
+            ui.label(
+                egui::RichText::new(t!("history.tag_label"))
+                    .size(11.0)
+                    .color(self.theme.muted),
+            );
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
+                let all_selected = self.tag_filter.is_none();
+                if filter_chip(ui, t!("history.filter_all"), all_selected, &self.theme).clicked() {
+                    self.set_tag_filter(None);
                 }
-            }
+                let tags = self.saved_tags.clone();
+                for tag in tags {
+                    let selected = self.tag_filter.as_ref() == Some(&tag);
+                    if filter_chip(ui, &tag, selected, &self.theme).clicked() {
+                        self.set_tag_filter(Some(tag));
+                    }
+                }
+            });
         });
     }
 
@@ -3156,6 +3162,11 @@ impl ClipboardApp {
         let sensitive = self.privacy_protection && entry.is_sensitive();
         let entry_id = entry.id;
         let entry_pinned = entry.is_pinned;
+        let has_matching_actions = self
+            .entry_matching_actions
+            .get(&entry_id)
+            .is_some_and(|actions| !actions.is_empty());
+        let action_bar_width = card_action_bar_width(has_matching_actions);
         let fill = if selected {
             self.theme.history_selected
         } else {
@@ -3244,7 +3255,7 @@ impl ClipboardApp {
                         } else {
                             ui.horizontal(|ui| {
                                 let row_width = ui.available_width().max(0.0);
-                                let action_width = CARD_ACTION_WIDTH.min(row_width);
+                                let action_width = action_bar_width.min(row_width);
                                 let meta_width = (row_width - action_width).max(0.0);
                                 ui.allocate_ui_with_layout(
                                     egui::vec2(meta_width, 24.0),
@@ -3317,21 +3328,23 @@ impl ClipboardApp {
                             }
 
                             if self.tag_manager_enabled && !entry.tags.is_empty() {
-                                let tag_width = (ui.available_width()
-                                    - CARD_TAG_RESERVED_ACTION_WIDTH)
-                                    .max(120.0);
-                                ui.allocate_ui_with_layout(
-                                    egui::vec2(tag_width, 24.0),
-                                    egui::Layout::left_to_right(egui::Align::Center),
-                                    |ui| {
-                                        limited_tag_chips(
-                                            ui,
-                                            &entry.tags,
-                                            &self.theme,
-                                            REGULAR_CARD_TAG_LIMIT,
-                                        );
-                                    },
-                                );
+                                let available = ui.available_width().max(0.0);
+                                let tag_width =
+                                    (available - action_bar_width - 12.0).clamp(0.0, available);
+                                if tag_width > 24.0 {
+                                    ui.allocate_ui_with_layout(
+                                        egui::vec2(tag_width, 24.0),
+                                        egui::Layout::left_to_right(egui::Align::Center),
+                                        |ui| {
+                                            limited_tag_chips(
+                                                ui,
+                                                &entry.tags,
+                                                &self.theme,
+                                                REGULAR_CARD_TAG_LIMIT,
+                                            );
+                                        },
+                                    );
+                                }
                             }
                         }
                     });
@@ -3376,10 +3389,10 @@ impl ClipboardApp {
         if show_actions {
             let action_bar_rect = egui::Rect::from_min_size(
                 egui::pos2(
-                    response.rect.right() - CARD_ACTION_WIDTH - 8.0,
+                    response.rect.right() - action_bar_width - 8.0,
                     response.rect.top() + 6.0,
                 ),
-                egui::vec2(CARD_ACTION_WIDTH, CARD_ACTION_BUTTON_SIZE + 4.0),
+                egui::vec2(action_bar_width, CARD_ACTION_BUTTON_SIZE + 4.0),
             );
             ui.painter().rect(
                 action_bar_rect,
@@ -3437,8 +3450,8 @@ impl ClipboardApp {
             {
                 pending_action = Some(CardAction::Delete);
             }
-            if let Some(matching_actions) = self.entry_matching_actions.get(&entry_id).cloned()
-                && !matching_actions.is_empty()
+            if has_matching_actions
+                && let Some(matching_actions) = self.entry_matching_actions.get(&entry_id).cloned()
             {
                 button_rect = button_rect.translate(egui::vec2(CARD_ACTION_BUTTON_SIZE + 4.0, 0.0));
                 let action_btn_response = action_bar_button(
@@ -3963,13 +3976,13 @@ impl ClipboardApp {
                 let page_end = (page_start + EMOJI_PAGE_SIZE).min(group.emojis.len());
                 ui.horizontal_wrapped(|ui| {
                     ui.label(
-                        egui::RichText::new(
-                            t!("emoji.page_info")
-                                .replace("{name}", localized_group_name(group))
-                                .replace("{count}", &group.emojis.len().to_string())
-                                .replace("{current}", &(self.emoji_page + 1).to_string())
-                                .replace("{total}", &total_pages.to_string()),
-                        )
+                        egui::RichText::new(t!(
+                            "emoji.page_info",
+                            name = localized_group_name(group),
+                            count = group.emojis.len(),
+                            current = self.emoji_page + 1,
+                            total = total_pages
+                        ))
                         .size(14.0)
                         .strong(),
                     );
@@ -3992,15 +4005,7 @@ impl ClipboardApp {
                         self.emoji_page += 1;
                     }
                 });
-                ui.label(
-                    egui::RichText::new(
-                        t!("emoji.group_source_hint")
-                            .replace("{source}", group.source_name)
-                            .replace("{total}", &ALL_TWEMOJI_EMOJIS.len().to_string()),
-                    )
-                    .color(self.theme.muted),
-                );
-                ui.add_space(8.0);
+                ui.add_space(6.0);
                 egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
@@ -5534,12 +5539,19 @@ fn search_box(
 }
 
 fn limited_tag_chips(ui: &mut egui::Ui, tags: &[String], theme: &MacosTokens, limit: usize) {
+    ui.spacing_mut().item_spacing = egui::vec2(5.0, 3.0);
     for tag in tags.iter().take(limit) {
         tag_chip(ui, tag, theme);
     }
     if tags.len() > limit {
         tag_chip(ui, &format!("+{}", tags.len() - limit), theme);
     }
+}
+
+fn card_action_bar_width(has_matching_actions: bool) -> f32 {
+    let button_count = if has_matching_actions { 4.0 } else { 3.0 };
+    let gap_count = button_count - 1.0;
+    8.0 + button_count * CARD_ACTION_BUTTON_SIZE + gap_count * 4.0
 }
 
 fn tag_chip(ui: &mut egui::Ui, tag: &str, theme: &MacosTokens) {
