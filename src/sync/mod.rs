@@ -19,6 +19,8 @@
 #[cfg(feature = "kde_connect")]
 use crate::storage::Storage;
 #[cfg(feature = "kde_connect")]
+use std::collections::HashSet;
+#[cfg(feature = "kde_connect")]
 use std::path::PathBuf;
 #[cfg(feature = "kde_connect")]
 use std::sync::Arc;
@@ -87,6 +89,7 @@ pub struct SyncManager {
     cmd_tx: Option<crossbeam_channel::Sender<SyncCmd>>,
     event_rx: Option<crossbeam_channel::Receiver<SyncEvent>>,
     echo_guard: SyncEchoGuard,
+    pending_clipboard: Option<String>,
 }
 
 #[cfg(feature = "kde_connect")]
@@ -102,6 +105,7 @@ impl SyncManager {
             cmd_tx: None,
             event_rx: None,
             echo_guard: SyncEchoGuard::new(),
+            pending_clipboard: None,
         }
     }
 
@@ -154,11 +158,12 @@ impl SyncManager {
 
         let storage = self.storage.clone();
         let device_id = self.device_id.clone();
+        let echo_guard = self.echo_guard.clone();
 
         std::thread::Builder::new()
             .name("sync-runtime".into())
             .spawn(move || {
-                sync_runtime(storage, device_id, cmd_rx, event_tx);
+                sync_runtime(storage, device_id, cmd_rx, event_tx, echo_guard);
             })
             .expect("spawn sync runtime");
 
@@ -242,7 +247,9 @@ impl SyncManager {
                 SyncEvent::PairFailed { id: _, reason } => {
                     self.state = SyncState::Error(reason);
                 }
-                SyncEvent::ClipboardReceived { content: _ } => {}
+                SyncEvent::ClipboardReceived { content } => {
+                    self.pending_clipboard = Some(content);
+                }
                 SyncEvent::Error(msg) => {
                     self.state = SyncState::Error(msg);
                 }
@@ -268,14 +275,7 @@ impl SyncManager {
     /// intentionally discarded because a single coalesced update is what the
     /// caller (clipboard watcher) actually wants to apply.
     pub fn take_clipboard_received(&mut self) -> Option<String> {
-        let rx = self.event_rx.as_ref()?;
-        let mut last = None;
-        while let Ok(event) = rx.try_recv() {
-            if let SyncEvent::ClipboardReceived { content } = event {
-                last = Some(content);
-            }
-        }
-        last
+        self.pending_clipboard.take()
     }
 }
 
@@ -413,9 +413,9 @@ pub struct TiezClipboardPlugin {
 
 #[cfg(feature = "kde_connect")]
 impl TiezClipboardPlugin {
-    pub fn new(event_tx: crossbeam_channel::Sender<SyncEvent>) -> Self {
+    pub fn new(event_tx: crossbeam_channel::Sender<SyncEvent>, echo_guard: SyncEchoGuard) -> Self {
         Self {
-            echo_guard: SyncEchoGuard::new(),
+            echo_guard,
             event_tx,
         }
     }
@@ -654,6 +654,7 @@ fn sync_runtime(
     device_id: String,
     cmd_rx: crossbeam_channel::Receiver<SyncCmd>,
     event_tx: crossbeam_channel::Sender<SyncEvent>,
+    echo_guard: SyncEchoGuard,
 ) {
     use kdeconnect_proto::{config::DeviceConfig, device::DeviceType, io::TokioIoImpl};
 
@@ -683,7 +684,9 @@ fn sync_runtime(
         private_key: key,
     };
 
-    let plugins: Vec<Box<dyn kdeconnect_proto::plugin::Plugin + Send + Sync>> = vec![];
+    let plugins: Vec<Box<dyn kdeconnect_proto::plugin::Plugin + Send + Sync>> = vec![Box::new(
+        TiezClipboardPlugin::new(event_tx.clone(), echo_guard),
+    )];
     let trust_handler = FileTrustHandler::new(trusted_devices_dir());
     let kdevice =
         kdeconnect_proto::device::Device::new(config, plugins, trust_handler, TokioIoImpl);
@@ -702,6 +705,7 @@ fn sync_runtime(
     let rt = tokio::runtime::Runtime::new().expect("create sync tokio runtime");
     rt.block_on(async move {
         let device = Arc::new(kdevice);
+        let mut pair_complete_sent = HashSet::new();
 
         {
             let d = device.clone();
@@ -726,11 +730,33 @@ fn sync_runtime(
         loop {
             tokio::select! {
                 link_id = device.wait_for_connection() => {
+                    let (id, name, paired) = link_device_info(&device, &link_id).await;
                     let _ = event_tx.send(SyncEvent::DeviceDiscovered {
-                        id: link_id.clone(),
-                        name: link_id.clone(),
+                        id: id.clone(),
+                        name: name.clone(),
                     });
+                    let _ = event_tx.send(SyncEvent::DeviceConnected {
+                        id: id.clone(),
+                        name: name.clone(),
+                    });
+                    if paired && pair_complete_sent.insert(id.clone()) {
+                        let _ = event_tx.send(SyncEvent::PairComplete { id: id.clone() });
+                    }
                     device.accept_pair(&link_id).await;
+                    let device_for_pair = Arc::clone(&device);
+                    let event_tx_for_pair = event_tx.clone();
+                    let link_id_for_pair = link_id.clone();
+                    tokio::spawn(async move {
+                        for _ in 0..40 {
+                            tokio::time::sleep(core::time::Duration::from_millis(250)).await;
+                            let (id, _, paired) =
+                                link_device_info(&device_for_pair, &link_id_for_pair).await;
+                            if paired {
+                                let _ = event_tx_for_pair.send(SyncEvent::PairComplete { id });
+                                break;
+                            }
+                        }
+                    });
                 }
                 cmd = tokio_cmd_rx.recv() => {
                     match cmd {
@@ -764,6 +790,32 @@ fn sync_runtime(
             }
         }
     });
+}
+
+#[cfg(feature = "kde_connect")]
+async fn link_device_info<Io, UdpSocket, TcpStream, TcpListener, TlsStream>(
+    device: &Arc<
+        kdeconnect_proto::device::Device<Io, UdpSocket, TcpStream, TcpListener, TlsStream>,
+    >,
+    link_id: &str,
+) -> (String, String, bool)
+where
+    Io: kdeconnect_proto::io::IoImpl<UdpSocket, TcpStream, TcpListener, TlsStream>
+        + Unpin
+        + 'static,
+    UdpSocket: kdeconnect_proto::io::UdpSocketImpl + Unpin + 'static,
+    TcpStream: kdeconnect_proto::io::TcpStreamImpl + Unpin + 'static,
+    TcpListener: kdeconnect_proto::io::TcpListenerImpl<TcpStream> + Unpin + 'static,
+    TlsStream: kdeconnect_proto::io::TlsStreamImpl + Unpin + 'static,
+{
+    let links = device.links().lock().await;
+    let Some(link) = links.get(link_id) else {
+        return (link_id.to_string(), link_id.to_string(), false);
+    };
+    let id = link.info.device_id.clone();
+    let name = link.info.device_name.clone().unwrap_or_else(|| id.clone());
+    let paired = link.pair_state == kdeconnect_proto::device::PairState::Paired;
+    (id, name, paired)
 }
 
 // ── Supplementary mDNS monitoring ─────────────────────────────────────
@@ -886,6 +938,26 @@ mod tests {
 
     #[test]
     #[cfg(feature = "kde_connect")]
+    fn test_poll_events_preserves_clipboard_received() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("test_sync_clipboard_event.db");
+        let storage = Storage::open(db_path).unwrap();
+        let mut mgr = SyncManager::new(storage);
+        let (tx, rx) = crossbeam_channel::unbounded();
+        mgr.event_rx = Some(rx);
+
+        tx.send(SyncEvent::ClipboardReceived {
+            content: "from phone".into(),
+        })
+        .unwrap();
+
+        mgr.poll_events();
+        assert_eq!(mgr.take_clipboard_received(), Some("from phone".into()));
+        assert_eq!(mgr.take_clipboard_received(), None);
+    }
+
+    #[test]
+    #[cfg(feature = "kde_connect")]
     fn test_discovery_struct() {
         let d = Discovery::new("abc123".into(), "My Phone".into());
         assert_eq!(d.device_id(), "abc123");
@@ -988,7 +1060,7 @@ mod tests {
     #[cfg(feature = "kde_connect")]
     fn test_clipboard_plugin_echo_guard_access() {
         let (tx, _rx) = crossbeam_channel::unbounded();
-        let plugin = TiezClipboardPlugin::new(tx);
+        let plugin = TiezClipboardPlugin::new(tx, SyncEchoGuard::new());
 
         let guard = plugin.echo_guard();
         assert!(!guard.should_suppress("anything"));
