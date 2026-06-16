@@ -1,6 +1,6 @@
 <a name="chinese"></a>
 
-![i18n](https://img.shields.io/badge/i18n-753%20keys%20%7C%20zh--CN%20100%25%20%7C%20en--US%20100%25-blue)
+![i18n](https://img.shields.io/badge/i18n-754%20keys%20%7C%20zh--CN%20100%25%20%7C%20en--US%20100%25-blue)
 [English](#i18n) | [中文](#tiez-slim-linux)
 
 # tiez-slim-linux
@@ -28,8 +28,8 @@ Rust 原生的轻量剪贴板管理器。原始上游为 [`jimuzhe/tiez-clipboar
 - 导出/导入与自动备份：支持将全部历史、标签和设置导出为 JSON 文件，可从 JSON 文件导入（自动去重）；关闭应用时可自动备份，保留份数可配置；数据管理面板含导出/导入/备份/立即备份/打开备份目录等操作。
 - 模糊搜索：基于 nucleo-matcher 的高性能模糊搜索，支持拼写纠错（如 `cllpboard` 匹配 `clipboard`）和中文模糊匹配；搜索结果按相关度排序，匹配字符高亮显示；可在设置中切换回传统子串搜索。
 - 数据库加密（opt-in）：通过 `secure_storage` feature gate 启用，使用 AES-256-GCM 加密敏感条目；密钥通过系统 keyring（GNOME Keyring / KWallet）管理；启用后标记为敏感的条目自动加密存储，读取时自动解密；支持批量加密/解密迁移，带 LRU 缓存优化读取性能。
-- KDE Connect 同步：默认编译启用，支持与 Android 设备通过 KDE Connect 协议同步剪贴板；设置面板含启用开关、设备 ID 显示、QR 码配对、已发现设备列表；配对后双向同步，带 echo 防重复机制。
-- 国际化（i18n）：完整双语支持（zh-CN + en-US），753 个翻译键，100% 覆盖率；使用 rust-i18n v4，启动时自动检测系统语言，支持手动切换；所有用户可见字符串均通过 `t!()` 宏引用，无硬编码。
+- KDE Connect 同步：默认编译启用，支持与 Android 设备通过 KDE Connect 协议同步剪贴板；设置面板含启用开关、设备 ID 显示、已发现设备列表；通过手机端设备列表配对后双向同步，带 echo 防重复机制。
+- 国际化（i18n）：完整双语支持（zh-CN + en-US），754 个翻译键，100% 覆盖率；使用 rust-i18n v4，启动时自动检测系统语言，支持手动切换；所有用户可见字符串均通过 `t!()` 宏引用，无硬编码。
 
 ## 使用方法
 
@@ -141,27 +141,25 @@ For rofi/wofi keyboard-driven clipboard picker integration, see [docs/rofi-scrip
 
 ## KDE Connect 配对教程 / KDE Connect Pairing Guide
 
-> 此功能需要编译时启用 `kde_connect` feature：`cargo build --features kde_connect`
+> KDE Connect 同步默认编译启用；无需额外 feature。Android 端 KDE Connect 没有通用二维码配对入口，请使用设备列表配对。
 
 ### 中文
 
 1. 在 Android 手机安装 [KDE Connect](https://play.google.com/store/apps/details?id=org.kde.kdeconnect_tp)
 2. 启动 tiez-slim，进入 **设置 → 同步** 面板
 3. 打开「启用 KDE Connect」开关
-4. 点击「显示 QR 码」，用手机 KDE Connect 扫描
-5. 在手机端确认配对请求
-6. 配对成功后，设备列表显示已连接设备名和状态
-7. 之后在任意一端复制文本，另一端剪贴板会自动同步
+4. 在手机 KDE Connect 的设备列表中选择 tiez-slim，并确认配对请求
+5. 配对成功后，设备列表显示已连接设备名和状态
+6. 之后在任意一端复制文本，另一端剪贴板会自动同步
 
 ### English
 
 1. Install [KDE Connect](https://play.google.com/store/apps/details?id=org.kde.kdeconnect_tp) on your Android phone
 2. Launch tiez-slim, go to **Settings → Sync** panel
 3. Enable the "KDE Connect" toggle
-4. Click "Show QR Code" and scan with KDE Connect on your phone
-5. Confirm the pairing request on your phone
-6. After pairing, the device list shows the connected device name and status
-7. From now on, copying text on either side automatically syncs to the other
+4. Select tiez-slim from Android KDE Connect's device list and confirm the pairing request
+5. After pairing, the device list shows the connected device name and status
+6. From now on, copying text on either side automatically syncs to the other
 
 > **注意 / Note**: 同步依赖两个设备在同一局域网。加密标记的敏感条目同步前会提示确认。
 > Sync requires both devices on the same network. Sensitive (encrypted) entries prompt for confirmation before syncing.
