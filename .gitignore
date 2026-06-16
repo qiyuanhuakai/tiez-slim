@@ -8,3 +8,6 @@
 *.db-shm
 *.db-wal
 *.log
+.omo/
+.opencode/
+.sisyphus/
