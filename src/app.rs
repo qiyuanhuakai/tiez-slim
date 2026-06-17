@@ -3244,7 +3244,8 @@ impl ClipboardApp {
             .show(ui, |ui| {
                 ui.set_width((card_width - 22.0).max(120.0));
                 ui.horizontal(|ui| {
-                    if matches!(entry.kind, crate::model::ClipboardKind::Image) {
+                    if self.compact_rows && matches!(entry.kind, crate::model::ClipboardKind::Image)
+                    {
                         self.draw_image_thumbnail(ui, entry);
                     }
                     ui.vertical(|ui| {
@@ -3347,6 +3348,10 @@ impl ClipboardApp {
                             } else {
                                 self.theme.fg
                             };
+                            if matches!(entry.kind, crate::model::ClipboardKind::Image) {
+                                self.draw_image_thumbnail(ui, entry);
+                                ui.add_space(3.0);
+                            }
                             let match_indices = self.search_hits.get(&entry.id);
                             if let Some(indices) = match_indices {
                                 if !indices.is_empty() && !sensitive {
